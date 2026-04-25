@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android", "web"],
+  "apple": {
+    "modules": ["StudyTimerModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.studytimermodule.StudyTimerModule"]
+  }
+}
