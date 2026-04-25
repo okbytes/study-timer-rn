@@ -13,6 +13,7 @@ public class StudyTimerModule: Module {
         sessionName: String,
         sessionId: String,
         status: String,
+        durationMs: Double,
         accumulatedElapsedMs: Double,
         runningSinceMs: Double?,
         pausedAtMs: Double?
@@ -26,6 +27,7 @@ public class StudyTimerModule: Module {
         sessionName: sessionName,
         sessionId: sessionId,
         status: StudyTimerStatus(rawValue: status) ?? .running,
+        durationMs: durationMs,
         accumulatedElapsedMs: accumulatedElapsedMs,
         runningSince: Date.studyTimerDate(fromJavaScriptTime: runningSinceMs),
         pausedAt: Date.studyTimerDate(fromJavaScriptTime: pausedAtMs)
@@ -40,6 +42,7 @@ public class StudyTimerModule: Module {
         sessionName: String,
         sessionId: String,
         status: String,
+        durationMs: Double,
         accumulatedElapsedMs: Double,
         runningSinceMs: Double?,
         pausedAtMs: Double?
@@ -53,6 +56,36 @@ public class StudyTimerModule: Module {
         sessionName: sessionName,
         sessionId: sessionId,
         status: StudyTimerStatus(rawValue: status) ?? .paused,
+        durationMs: durationMs,
+        accumulatedElapsedMs: accumulatedElapsedMs,
+        runningSince: Date.studyTimerDate(fromJavaScriptTime: runningSinceMs),
+        pausedAt: Date.studyTimerDate(fromJavaScriptTime: pausedAtMs)
+      )
+      #else
+      throw LiveActivityUnavailableException()
+      #endif
+    }
+
+    AsyncFunction("completeActivity") {
+      (
+        sessionName: String,
+        sessionId: String,
+        status: String,
+        durationMs: Double,
+        accumulatedElapsedMs: Double,
+        runningSinceMs: Double?,
+        pausedAtMs: Double?
+      ) async throws in
+      #if canImport(ActivityKit)
+      guard #available(iOS 16.1, *) else {
+        throw LiveActivityUnavailableException()
+      }
+
+      await StudyTimerActivityController.completeActivity(
+        sessionName: sessionName,
+        sessionId: sessionId,
+        status: StudyTimerStatus(rawValue: status) ?? .completed,
+        durationMs: durationMs,
         accumulatedElapsedMs: accumulatedElapsedMs,
         runningSince: Date.studyTimerDate(fromJavaScriptTime: runningSinceMs),
         pausedAt: Date.studyTimerDate(fromJavaScriptTime: pausedAtMs)
@@ -88,8 +121,10 @@ private extension Date {
 }
 
 private enum StudyTimerStatus: String {
+  case idle
   case running
   case paused
+  case completed
 }
 
 private final class LiveActivityUnavailableException: Exception {
@@ -111,6 +146,7 @@ private enum StudyTimerActivityController {
     sessionName: String,
     sessionId: String,
     status: StudyTimerStatus,
+    durationMs: Double,
     accumulatedElapsedMs: Double,
     runningSince: Date?,
     pausedAt: Date?
@@ -129,7 +165,8 @@ private enum StudyTimerActivityController {
       sessionName: sessionName,
       sessionId: sessionId,
       status: status.rawValue,
-      accumulatedElapsedMs: max(accumulatedElapsedMs, 0),
+      durationMs: normalizedDurationMs(durationMs),
+      accumulatedElapsedMs: clampedElapsedMs(accumulatedElapsedMs, durationMs: durationMs),
       runningSince: runningSince,
       pausedAt: pausedAt
     )
@@ -144,6 +181,7 @@ private enum StudyTimerActivityController {
     sessionName: String,
     sessionId: String,
     status: StudyTimerStatus,
+    durationMs: Double,
     accumulatedElapsedMs: Double,
     runningSince: Date?,
     pausedAt: Date?
@@ -157,7 +195,8 @@ private enum StudyTimerActivityController {
         sessionName: sessionName,
         sessionId: sessionId,
         status: status.rawValue,
-        accumulatedElapsedMs: max(accumulatedElapsedMs, 0),
+        durationMs: normalizedDurationMs(durationMs),
+        accumulatedElapsedMs: clampedElapsedMs(accumulatedElapsedMs, durationMs: durationMs),
         runningSince: runningSince,
         pausedAt: pausedAt
       )
@@ -166,12 +205,44 @@ private enum StudyTimerActivityController {
     }
   }
 
+  static func completeActivity(
+    sessionName: String,
+    sessionId: String,
+    status: StudyTimerStatus,
+    durationMs: Double,
+    accumulatedElapsedMs: Double,
+    runningSince: Date?,
+    pausedAt: Date?
+  ) async {
+    for activity in Activity<StudyTimerActivityAttributes>.activities {
+      guard activity.attributes.sessionId == sessionId else {
+        continue
+      }
+
+      let state = StudyTimerActivityAttributes.ContentState(
+        sessionName: sessionName,
+        sessionId: sessionId,
+        status: status.rawValue,
+        durationMs: normalizedDurationMs(durationMs),
+        accumulatedElapsedMs: clampedElapsedMs(accumulatedElapsedMs, durationMs: durationMs),
+        runningSince: runningSince,
+        pausedAt: pausedAt
+      )
+
+      await activity.end(
+        using: state,
+        dismissalPolicy: .default
+      )
+    }
+  }
+
   static func endActivity() async {
     for activity in Activity<StudyTimerActivityAttributes>.activities {
       let state = StudyTimerActivityAttributes.ContentState(
         sessionName: activity.contentState.sessionName,
         sessionId: activity.contentState.sessionId,
-        status: StudyTimerStatus.paused.rawValue,
+        status: StudyTimerStatus.idle.rawValue,
+        durationMs: activity.contentState.durationMs,
         accumulatedElapsedMs: activity.contentState.resolvedElapsedMs(at: Date()),
         runningSince: nil,
         pausedAt: Date()
@@ -183,16 +254,25 @@ private enum StudyTimerActivityController {
       )
     }
   }
+
+  private static func normalizedDurationMs(_ durationMs: Double) -> Double {
+    max(durationMs, 0)
+  }
+
+  private static func clampedElapsedMs(_ elapsedMs: Double, durationMs: Double) -> Double {
+    min(max(elapsedMs, 0), normalizedDurationMs(durationMs))
+  }
 }
 
 @available(iOS 16.1, *)
 private extension StudyTimerActivityAttributes.ContentState {
   func resolvedElapsedMs(at date: Date) -> Double {
     guard status == StudyTimerStatus.running.rawValue, let runningSince else {
-      return accumulatedElapsedMs
+      return min(max(accumulatedElapsedMs, 0), max(durationMs, 0))
     }
 
-    return max(accumulatedElapsedMs + date.timeIntervalSince(runningSince) * 1_000, 0)
+    let elapsedMs = accumulatedElapsedMs + date.timeIntervalSince(runningSince) * 1_000
+    return min(max(elapsedMs, 0), max(durationMs, 0))
   }
 }
 #endif

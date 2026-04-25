@@ -1,5 +1,6 @@
 export {
   default,
+  completeActivity,
   endActivity,
   startActivity,
   updateActivity,

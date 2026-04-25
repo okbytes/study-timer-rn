@@ -7,6 +7,7 @@ declare class StudyTimerModule extends NativeModule<StudyTimerModuleEvents> {
     sessionName: string,
     sessionId: string,
     status: string,
+    durationMs: number,
     accumulatedElapsedMs: number,
     runningSinceMs: number | null,
     pausedAtMs: number | null
@@ -15,6 +16,16 @@ declare class StudyTimerModule extends NativeModule<StudyTimerModuleEvents> {
     sessionName: string,
     sessionId: string,
     status: string,
+    durationMs: number,
+    accumulatedElapsedMs: number,
+    runningSinceMs: number | null,
+    pausedAtMs: number | null
+  ): Promise<void>;
+  completeActivity(
+    sessionName: string,
+    sessionId: string,
+    status: string,
+    durationMs: number,
     accumulatedElapsedMs: number,
     runningSinceMs: number | null,
     pausedAtMs: number | null
@@ -29,6 +40,7 @@ function toNativeArgs(state: StudyTimerActivityState) {
     state.sessionName,
     state.sessionId,
     state.status,
+    state.durationMs,
     state.accumulatedElapsedMs,
     state.runningSinceMs,
     state.pausedAtMs,
@@ -41,6 +53,10 @@ export function startActivity(state: StudyTimerActivityState): Promise<void> {
 
 export function updateActivity(state: StudyTimerActivityState): Promise<void> {
   return nativeModule?.updateActivity(...toNativeArgs(state)) ?? Promise.resolve();
+}
+
+export function completeActivity(state: StudyTimerActivityState): Promise<void> {
+  return nativeModule?.completeActivity(...toNativeArgs(state)) ?? Promise.resolve();
 }
 
 export function endActivity(): Promise<void> {

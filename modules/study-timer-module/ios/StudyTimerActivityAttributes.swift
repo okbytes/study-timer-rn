@@ -8,6 +8,7 @@ public struct StudyTimerActivityAttributes: ActivityAttributes {
     public var sessionName: String
     public var sessionId: String
     public var status: String
+    public var durationMs: Double
     public var accumulatedElapsedMs: Double
     public var runningSince: Date?
     public var pausedAt: Date?
@@ -16,6 +17,7 @@ public struct StudyTimerActivityAttributes: ActivityAttributes {
       sessionName: String,
       sessionId: String,
       status: String,
+      durationMs: Double,
       accumulatedElapsedMs: Double,
       runningSince: Date?,
       pausedAt: Date?
@@ -23,6 +25,7 @@ public struct StudyTimerActivityAttributes: ActivityAttributes {
       self.sessionName = sessionName
       self.sessionId = sessionId
       self.status = status
+      self.durationMs = durationMs
       self.accumulatedElapsedMs = accumulatedElapsedMs
       self.runningSince = runningSince
       self.pausedAt = pausedAt

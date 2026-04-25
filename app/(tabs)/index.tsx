@@ -1,8 +1,6 @@
-import { Ionicons } from '@expo/vector-icons';
-import { File, Paths } from 'expo-file-system';
-import { useEffect, useMemo, useState } from 'react';
+import { Ionicons } from "@expo/vector-icons";
+import { useEffect, useMemo, useState } from "react";
 import {
-  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -10,60 +8,93 @@ import {
   Text,
   TextInput,
   View,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+} from "react-native";
+import type { DimensionValue } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
-import { endActivity, startActivity, updateActivity } from '@/modules/study-timer-module';
-import type { StudyTimerActivityState } from '@/modules/study-timer-module';
+import type { StudyTimerActivityState } from "@/modules/study-timer-module";
+import {
+  completeActivity,
+  endActivity,
+  startActivity,
+  updateActivity,
+} from "@/modules/study-timer-module";
 
-const DEFAULT_SESSION_NAME = 'Chapter 5 Review';
-const HOUR_MS = 60 * 60 * 1000;
-const SESSION_STORAGE_FILE = new File(Paths.document, 'study-timer-session.json');
+const DEFAULT_SESSION_NAME = "Study Timer";
+const DEFAULT_DURATION_MINUTES = "25";
+const MIN_DURATION_MS = 60 * 1000;
+const MINUTE_MS = 60 * 1000;
 
-type RunningTimerSession = {
+type TimerStatus = "idle" | "running" | "paused" | "completed";
+
+type TimerSessionBase = {
   sessionName: string;
   sessionId: string;
-  status: 'running';
+  durationMs: number;
   accumulatedElapsedMs: number;
+};
+
+type RunningTimerSession = TimerSessionBase & {
+  status: "running";
   runningSinceMs: number;
   pausedAtMs: null;
 };
 
-type PausedTimerSession = {
-  sessionName: string;
-  sessionId: string;
-  status: 'paused';
-  accumulatedElapsedMs: number;
+type PausedTimerSession = TimerSessionBase & {
+  status: "paused";
   runningSinceMs: null;
   pausedAtMs: number;
 };
 
-type TimerSession = RunningTimerSession | PausedTimerSession;
-
-type PersistedTimerState = {
-  version: 1;
-  sessionName: string;
-  session: TimerSession | null;
+type CompletedTimerSession = TimerSessionBase & {
+  status: "completed";
+  runningSinceMs: null;
+  pausedAtMs: number;
 };
 
-function formatElapsedTime(totalMs: number) {
-  const totalSeconds = Math.floor(totalMs / 1000);
+type TimerSession =
+  | RunningTimerSession
+  | PausedTimerSession
+  | CompletedTimerSession;
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function formatRemainingTime(totalMs: number) {
+  const totalSeconds = Math.max(Math.ceil(totalMs / 1000), 0);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
 
-  return [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':');
+  return [hours, minutes, seconds]
+    .map((value) => String(value).padStart(2, "0"))
+    .join(":");
+}
+
+function formatDurationMinutes(totalMs: number) {
+  return String(Math.max(Math.round(totalMs / MINUTE_MS), 1));
+}
+
+function parseDurationMs(value: string) {
+  const parsedMinutes = Number.parseFloat(value.replace(",", "."));
+
+  if (!Number.isFinite(parsedMinutes) || parsedMinutes <= 0) {
+    return Number.parseInt(DEFAULT_DURATION_MINUTES, 10) * MINUTE_MS;
+  }
+
+  return Math.max(Math.round(parsedMinutes * MINUTE_MS), MIN_DURATION_MS);
 }
 
 async function callLiveActivity(action: () => Promise<void>) {
-  if (Platform.OS !== 'ios') {
+  if (Platform.OS !== "ios") {
     return;
   }
 
   try {
     await action();
   } catch (error) {
-    console.warn('Live Activity bridge call failed', error);
+    console.warn("Live Activity bridge call failed", error);
   }
 }
 
@@ -76,11 +107,23 @@ function getElapsedMs(session: TimerSession | null, currentTimeMs: number) {
     return 0;
   }
 
-  if (session.status === 'paused') {
-    return session.accumulatedElapsedMs;
+  if (session.status !== "running") {
+    return clamp(session.accumulatedElapsedMs, 0, session.durationMs);
   }
 
-  return session.accumulatedElapsedMs + (currentTimeMs - session.runningSinceMs);
+  return clamp(
+    session.accumulatedElapsedMs + (currentTimeMs - session.runningSinceMs),
+    0,
+    session.durationMs,
+  );
+}
+
+function getRemainingMs(session: TimerSession | null, currentTimeMs: number) {
+  if (!session) {
+    return 0;
+  }
+
+  return Math.max(session.durationMs - getElapsedMs(session, currentTimeMs), 0);
 }
 
 function toActivityState(session: TimerSession): StudyTimerActivityState {
@@ -88,111 +131,53 @@ function toActivityState(session: TimerSession): StudyTimerActivityState {
     sessionName: session.sessionName,
     sessionId: session.sessionId,
     status: session.status,
+    durationMs: session.durationMs,
     accumulatedElapsedMs: session.accumulatedElapsedMs,
     runningSinceMs: session.runningSinceMs,
     pausedAtMs: session.pausedAtMs,
   };
 }
 
-function isTimerSession(value: unknown): value is TimerSession {
-  if (!value || typeof value !== 'object') {
-    return false;
-  }
-
-  const candidate = value as Partial<TimerSession>;
-  const hasBaseFields =
-    typeof candidate.sessionName === 'string' &&
-    typeof candidate.sessionId === 'string' &&
-    typeof candidate.accumulatedElapsedMs === 'number';
-
-  if (!hasBaseFields) {
-    return false;
-  }
-
-  if (candidate.status === 'running') {
-    return typeof candidate.runningSinceMs === 'number' && candidate.pausedAtMs === null;
-  }
-
-  return candidate.status === 'paused' && candidate.runningSinceMs === null && typeof candidate.pausedAtMs === 'number';
+function normalizeSessionName(name: string) {
+  return name.trim() || DEFAULT_SESSION_NAME;
 }
 
-async function loadPersistedTimerState(): Promise<PersistedTimerState | null> {
-  try {
-    if (!SESSION_STORAGE_FILE.exists) {
-      return null;
-    }
-
-    const parsed = JSON.parse(await SESSION_STORAGE_FILE.text()) as Partial<PersistedTimerState>;
-    if (parsed.version !== 1 || typeof parsed.sessionName !== 'string') {
-      return null;
-    }
-
-    return {
-      version: 1,
-      sessionName: parsed.sessionName,
-      session: isTimerSession(parsed.session) ? parsed.session : null,
-    };
-  } catch (error) {
-    console.warn('Unable to load study timer session', error);
-    return null;
-  }
-}
-
-async function persistTimerState(state: PersistedTimerState) {
-  try {
-    if (!SESSION_STORAGE_FILE.exists) {
-      SESSION_STORAGE_FILE.create({ intermediates: true, overwrite: true });
-    }
-
-    SESSION_STORAGE_FILE.write(JSON.stringify(state));
-  } catch (error) {
-    console.warn('Unable to persist study timer session', error);
+function statusLabel(status: TimerStatus) {
+  switch (status) {
+    case "running":
+      return "Running";
+    case "paused":
+      return "Paused";
+    case "completed":
+      return "Completed";
+    case "idle":
+      return "Ready";
   }
 }
 
 export default function HomeScreen() {
   const [sessionName, setSessionName] = useState(DEFAULT_SESSION_NAME);
+  const [durationMinutes, setDurationMinutes] = useState(
+    DEFAULT_DURATION_MINUTES,
+  );
   const [session, setSession] = useState<TimerSession | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const [hasLoadedPersistedState, setHasLoadedPersistedState] = useState(false);
 
+  const plannedDurationMs = useMemo(
+    () => parseDurationMs(durationMinutes),
+    [durationMinutes],
+  );
+  const displayDurationMs = session?.durationMs ?? plannedDurationMs;
   const elapsedMs = useMemo(() => getElapsedMs(session, now), [now, session]);
-
-  const progress = Math.min((elapsedMs % HOUR_MS) / HOUR_MS, 1);
-  const displayName = session ? session.sessionName : sessionName.trim() || DEFAULT_SESSION_NAME;
-
-  useEffect(() => {
-    let isMounted = true;
-
-    void loadPersistedTimerState().then((persistedState) => {
-      if (!isMounted) {
-        return;
-      }
-
-      if (persistedState) {
-        setSessionName(persistedState.sessionName);
-        setSession(persistedState.session);
-      }
-
-      setHasLoadedPersistedState(true);
-    });
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!hasLoadedPersistedState) {
-      return;
+  const remainingMs = useMemo(() => {
+    if (!session) {
+      return plannedDurationMs;
     }
 
-    void persistTimerState({
-      version: 1,
-      sessionName,
-      session,
-    });
-  }, [hasLoadedPersistedState, session, sessionName]);
+    return getRemainingMs(session, now);
+  }, [now, plannedDurationMs, session]);
+  const progress = displayDurationMs > 0 ? elapsedMs / displayDurationMs : 0;
+  const status: TimerStatus = session?.status ?? "idle";
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -202,34 +187,122 @@ export default function HomeScreen() {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    if (!session || session.status !== "running" || remainingMs > 0) {
+      return;
+    }
+
+    const completedAt = Date.now();
+    const nextSession: TimerSession = {
+      ...session,
+      status: "completed",
+      accumulatedElapsedMs: session.durationMs,
+      runningSinceMs: null,
+      pausedAtMs: completedAt,
+    };
+
+    setNow(completedAt);
+    setSession(nextSession);
+    void callLiveActivity(() => completeActivity(toActivityState(nextSession)));
+  }, [remainingMs, session]);
+
+  const completeSession = async (nextSession: CompletedTimerSession) => {
+    setNow(nextSession.pausedAtMs);
+    setSession(nextSession);
+
+    await callLiveActivity(() => completeActivity(toActivityState(nextSession)));
+  };
+
   const beginSession = async () => {
-    const name = sessionName.trim() || DEFAULT_SESSION_NAME;
+    const name = normalizeSessionName(sessionName);
+    const durationMs = parseDurationMs(durationMinutes);
     const runningSinceMs = Date.now();
     const nextSession: TimerSession = {
       sessionName: name,
       sessionId: createSessionId(),
-      status: 'running',
+      status: "running",
+      durationMs,
       accumulatedElapsedMs: 0,
       runningSinceMs,
       pausedAtMs: null,
     };
 
     setNow(runningSinceMs);
+    setSessionName(name);
+    setDurationMinutes(formatDurationMinutes(durationMs));
     setSession(nextSession);
 
     await callLiveActivity(() => startActivity(toActivityState(nextSession)));
   };
 
+  const updateSessionName = (nextName: string) => {
+    setSessionName(nextName);
+
+    if (!session) {
+      return;
+    }
+
+    setSession({
+      ...session,
+      sessionName: normalizeSessionName(nextName),
+    });
+  };
+
+  const normalizeEditableSessionName = () => {
+    const normalizedName = normalizeSessionName(sessionName);
+
+    if (normalizedName !== sessionName) {
+      setSessionName(normalizedName);
+    }
+
+    if (session && normalizedName !== session.sessionName) {
+      setSession({
+        ...session,
+        sessionName: normalizedName,
+      });
+    }
+
+    return normalizedName;
+  };
+
+  const syncSessionNameToLiveActivity = async () => {
+    if (!session) {
+      normalizeEditableSessionName();
+      return;
+    }
+
+    const normalizedName = normalizeEditableSessionName();
+    const nextSession = {
+      ...session,
+      sessionName: normalizedName,
+    };
+
+    await callLiveActivity(() => updateActivity(toActivityState(nextSession)));
+  };
+
   const pauseSession = async () => {
-    if (!session || session.status === 'paused') {
+    if (!session || session.status !== "running") {
       return;
     }
 
     const pausedAt = Date.now();
+    const accumulatedElapsedMs = getElapsedMs(session, pausedAt);
+
+    if (accumulatedElapsedMs >= session.durationMs) {
+      await completeSession({
+        ...session,
+        status: "completed",
+        accumulatedElapsedMs: session.durationMs,
+        runningSinceMs: null,
+        pausedAtMs: pausedAt,
+      });
+      return;
+    }
+
     const nextSession: TimerSession = {
       ...session,
-      status: 'paused',
-      accumulatedElapsedMs: getElapsedMs(session, pausedAt),
+      status: "paused",
+      accumulatedElapsedMs,
       runningSinceMs: null,
       pausedAtMs: pausedAt,
     };
@@ -241,14 +314,24 @@ export default function HomeScreen() {
   };
 
   const resumeSession = async () => {
-    if (!session || session.status === 'running') {
+    if (!session || session.status !== "paused") {
+      return;
+    }
+
+    if (session.accumulatedElapsedMs >= session.durationMs) {
+      await completeSession({
+        ...session,
+        status: "completed",
+        accumulatedElapsedMs: session.durationMs,
+        pausedAtMs: Date.now(),
+      });
       return;
     }
 
     const runningSinceMs = Date.now();
     const nextSession: TimerSession = {
       ...session,
-      status: 'running',
+      status: "running",
       runningSinceMs,
       pausedAtMs: null,
     };
@@ -264,112 +347,131 @@ export default function HomeScreen() {
     await callLiveActivity(endActivity);
   };
 
-  const confirmStop = () => {
-    if (Platform.OS === 'web') {
-      void stopSession();
-      return;
-    }
-
-    Alert.alert('Stop session?', 'This ends the timer and dismisses the Live Activity.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Stop', style: 'destructive', onPress: () => void stopSession() },
-    ]);
-  };
+  const progressWidth = `${clamp(progress, 0, 1) * 100}%` as DimensionValue;
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <KeyboardAvoidingView
-        behavior={Platform.select({ ios: 'padding', default: undefined })}
-        style={styles.screen}>
-        <View style={styles.header}>
-          <View style={styles.headerIcon}>
-            <Ionicons name="book" size={22} color="#FFFFFF" />
-          </View>
-          <View>
-            <Text style={styles.eyebrow}>Study Timer</Text>
-            <Text style={styles.headerTitle}>Focus session</Text>
-          </View>
-        </View>
-
+        behavior={Platform.select({ ios: "padding", default: undefined })}
+        style={styles.screen}
+      >
         <View style={styles.timerPanel}>
-          <Text style={styles.sessionName} numberOfLines={2}>
-            {displayName}
-          </Text>
+          <TextInput
+            accessibilityLabel="Session name"
+            onBlur={() => void syncSessionNameToLiveActivity()}
+            onChangeText={updateSessionName}
+            onSubmitEditing={() => void syncSessionNameToLiveActivity()}
+            placeholder={DEFAULT_SESSION_NAME}
+            placeholderTextColor="#7C8580"
+            returnKeyType="done"
+            style={styles.sessionNameInput}
+            value={sessionName}
+          />
 
-          <Text style={styles.elapsed}>{formatElapsedTime(elapsedMs)}</Text>
+          <View style={styles.durationRow}>
+            <TextInput
+              accessibilityLabel="Duration in minutes"
+              editable={!session}
+              inputMode="decimal"
+              keyboardType="decimal-pad"
+              onBlur={() =>
+                setDurationMinutes(formatDurationMinutes(plannedDurationMs))
+              }
+              onChangeText={setDurationMinutes}
+              placeholder={DEFAULT_DURATION_MINUTES}
+              placeholderTextColor="#7C8580"
+              returnKeyType="done"
+              style={[
+                styles.durationInput,
+                session && styles.durationInputDisabled,
+              ]}
+              value={durationMinutes}
+            />
+            <Text style={styles.durationUnit}>min</Text>
+          </View>
+
+          <Text style={styles.remaining}>{formatRemainingTime(remainingMs)}</Text>
 
           <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${Math.max(progress * 100, 2)}%` }]} />
+            <View style={[styles.progressFill, { width: progressWidth }]} />
           </View>
 
           <View style={styles.stateRow}>
-            <View style={[styles.statusDot, session?.status === 'running' ? styles.dotRunning : styles.dotIdle]} />
-            <Text style={styles.statusText}>
-              {session ? (session.status === 'running' ? 'Running' : 'Paused') : 'Ready'}
-            </Text>
-          </View>
-
-          <View style={styles.controls}>
-            <Pressable
-              accessibilityRole="button"
-              disabled={!session}
-              onPress={session?.status === 'running' ? pauseSession : resumeSession}
-              style={({ pressed }) => [
-                styles.controlButton,
-                styles.secondaryButton,
-                !session && styles.disabledButton,
-                pressed && session && styles.pressed,
-              ]}>
-              <Ionicons
-                name={session?.status === 'running' ? 'pause' : 'play'}
-                size={18}
-                color={session ? '#14312A' : '#9CA3AF'}
-              />
-              <Text style={[styles.secondaryButtonText, !session && styles.disabledText]}>
-                {session?.status === 'running' ? 'Pause' : 'Resume'}
-              </Text>
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              disabled={!session}
-              onPress={confirmStop}
-              style={({ pressed }) => [
-                styles.controlButton,
-                styles.stopButton,
-                !session && styles.disabledButton,
-                pressed && session && styles.pressed,
-              ]}>
-              <Ionicons name="stop" size={17} color={session ? '#FFFFFF' : '#9CA3AF'} />
-              <Text style={[styles.stopButtonText, !session && styles.disabledText]}>Stop</Text>
-            </Pressable>
-          </View>
-        </View>
-
-        <View style={styles.newSession}>
-          <Text style={styles.sectionLabel}>Start New Session</Text>
-          <View style={styles.inputRow}>
-            <TextInput
-              editable={session?.status !== 'running'}
-              onChangeText={setSessionName}
-              placeholder="Session name"
-              placeholderTextColor="#7C8580"
-              returnKeyType="done"
-              style={styles.input}
-              value={sessionName}
+            <View
+              style={[
+                styles.statusDot,
+                status === "running" && styles.dotRunning,
+                status === "paused" && styles.dotPaused,
+                status === "completed" && styles.dotCompleted,
+                status === "idle" && styles.dotIdle,
+              ]}
             />
+            <Text style={styles.statusText}>{statusLabel(status)}</Text>
+          </View>
+
+          {session && session.status !== "completed" ? (
+            <View style={styles.controls}>
+              <Pressable
+                accessibilityRole="button"
+                onPress={
+                  session.status === "running" ? pauseSession : resumeSession
+                }
+                style={({ pressed }) => [
+                  styles.controlButton,
+                  styles.secondaryButton,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Ionicons
+                  name={session.status === "running" ? "pause" : "play"}
+                  size={18}
+                  color="#14312A"
+                />
+                <Text style={styles.secondaryButtonText}>
+                  {session.status === "running" ? "Pause" : "Resume"}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => void stopSession()}
+                style={({ pressed }) => [
+                  styles.controlButton,
+                  styles.stopButton,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Ionicons name="stop" size={17} color="#FFFFFF" />
+                <Text style={styles.stopButtonText}>Stop</Text>
+              </Pressable>
+            </View>
+          ) : session ? (
             <Pressable
               accessibilityRole="button"
-              disabled={Boolean(session)}
+              onPress={() => void stopSession()}
+              style={({ pressed }) => [
+                styles.startSessionButton,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Ionicons name="checkmark" size={18} color="#FFFFFF" />
+              <Text style={styles.startSessionButtonText}>Done</Text>
+            </Pressable>
+          ) : (
+            <Pressable
+              accessibilityRole="button"
               onPress={beginSession}
               style={({ pressed }) => [
-                styles.startButton,
-                session && styles.disabledButton,
-                pressed && !session && styles.pressed,
-              ]}>
-              <Ionicons name="add" size={22} color={session ? '#9CA3AF' : '#FFFFFF'} />
+                styles.startSessionButton,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Ionicons name="play" size={18} color="#FFFFFF" />
+              <Text style={styles.startSessionButtonText}>
+                Start Study Session
+              </Text>
             </Pressable>
-          </View>
+          )}
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -379,90 +481,88 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#F4F0E8',
+    backgroundColor: "#F4F0E8",
   },
   screen: {
     flex: 1,
-    justifyContent: 'center',
+    justifyContent: "center",
     paddingHorizontal: 24,
     paddingVertical: 28,
   },
-  header: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 26,
-  },
-  headerIcon: {
-    alignItems: 'center',
-    backgroundColor: '#315C4E',
-    borderRadius: 16,
-    height: 48,
-    justifyContent: 'center',
-    width: 48,
-  },
-  eyebrow: {
-    color: '#68746E',
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 0,
-    textTransform: 'uppercase',
-  },
-  headerTitle: {
-    color: '#16221D',
-    fontSize: 28,
-    fontWeight: '800',
-    letterSpacing: 0,
-    lineHeight: 34,
-  },
   timerPanel: {
-    alignItems: 'center',
-    backgroundColor: '#FFFCF6',
-    borderColor: '#E2D8C8',
-    borderRadius: 8,
-    borderWidth: 1,
+    alignItems: "center",
     paddingHorizontal: 22,
     paddingVertical: 34,
-    shadowColor: '#1D2B24',
-    shadowOffset: { width: 0, height: 16 },
-    shadowOpacity: 0.08,
-    shadowRadius: 24,
   },
-  sessionName: {
-    color: '#1A2922',
+  sessionNameInput: {
+    color: "#1A2922",
     fontSize: 24,
-    fontWeight: '700',
+    fontWeight: "700",
     letterSpacing: 0,
     lineHeight: 30,
     maxWidth: 280,
-    minHeight: 60,
-    textAlign: 'center',
+    minHeight: 44,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    textAlign: "center",
+    width: "100%",
   },
-  elapsed: {
-    color: '#111A16',
-    fontVariant: ['tabular-nums'],
+  durationRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+    height: 38,
+    justifyContent: "center",
+    marginTop: 8,
+  },
+  durationInput: {
+    backgroundColor: "#EAE4D9",
+    borderRadius: 8,
+    color: "#1A2922",
+    fontSize: 16,
+    fontVariant: ["tabular-nums"],
+    fontWeight: "800",
+    height: 38,
+    letterSpacing: 0,
+    minWidth: 72,
+    paddingHorizontal: 12,
+    paddingVertical: 0,
+    textAlign: "center",
+  },
+  durationInputDisabled: {
+    color: "#59645F",
+  },
+  durationUnit: {
+    color: "#59645F",
+    fontSize: 14,
+    fontWeight: "800",
+    letterSpacing: 0,
+  },
+  remaining: {
+    color: "#111A16",
+    fontVariant: ["tabular-nums"],
     fontSize: 54,
-    fontWeight: '800',
+    fontWeight: "800",
     letterSpacing: 0,
     lineHeight: 64,
-    marginTop: 14,
+    marginTop: 12,
   },
   progressTrack: {
-    backgroundColor: '#E6DFD2',
+    backgroundColor: "#E6DFD2",
     borderRadius: 999,
     height: 8,
     marginTop: 18,
-    overflow: 'hidden',
-    width: '100%',
+    overflow: "hidden",
+    width: "100%",
   },
   progressFill: {
-    backgroundColor: '#2E7A63',
+    backgroundColor: "#2E7A63",
     borderRadius: 999,
-    height: '100%',
+    height: "100%",
   },
   stateRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
+    alignItems: "center",
+    flexDirection: "row",
     gap: 8,
     marginTop: 18,
   },
@@ -472,98 +572,75 @@ const styles = StyleSheet.create({
     width: 10,
   },
   dotRunning: {
-    backgroundColor: '#2E7A63',
+    backgroundColor: "#2E7A63",
+  },
+  dotPaused: {
+    backgroundColor: "#D8953D",
+  },
+  dotCompleted: {
+    backgroundColor: "#315C4E",
   },
   dotIdle: {
-    backgroundColor: '#CB6D51',
+    backgroundColor: "#CB6D51",
   },
   statusText: {
-    color: '#59645F',
+    color: "#59645F",
     fontSize: 14,
-    fontWeight: '700',
+    fontWeight: "700",
     letterSpacing: 0,
   },
   controls: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 12,
     marginTop: 28,
-    width: '100%',
+    width: "100%",
   },
   controlButton: {
-    alignItems: 'center',
+    alignItems: "center",
     borderRadius: 8,
     flex: 1,
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 8,
     height: 50,
-    justifyContent: 'center',
+    justifyContent: "center",
   },
   secondaryButton: {
-    backgroundColor: '#DCEADF',
+    backgroundColor: "#DCEADF",
   },
   secondaryButtonText: {
-    color: '#14312A',
+    color: "#14312A",
     fontSize: 16,
-    fontWeight: '800',
+    fontWeight: "800",
     letterSpacing: 0,
   },
   stopButton: {
-    backgroundColor: '#C5543B',
+    backgroundColor: "#C5543B",
   },
   stopButtonText: {
-    color: '#FFFFFF',
+    color: "#FFFFFF",
     fontSize: 16,
-    fontWeight: '800',
+    fontWeight: "800",
     letterSpacing: 0,
-  },
-  disabledButton: {
-    backgroundColor: '#E7E1D7',
-  },
-  disabledText: {
-    color: '#9CA3AF',
   },
   pressed: {
     opacity: 0.78,
     transform: [{ scale: 0.99 }],
   },
-  newSession: {
-    borderTopColor: '#D8CFC0',
-    borderTopWidth: 1,
-    marginTop: 30,
-    paddingTop: 26,
+  startSessionButton: {
+    alignItems: "center",
+    backgroundColor: "#315C4E",
+    borderRadius: 8,
+    flexDirection: "row",
+    gap: 8,
+    height: 50,
+    justifyContent: "center",
+    marginTop: 28,
+    width: "100%",
   },
-  sectionLabel: {
-    color: '#38463F',
+  startSessionButtonText: {
+    color: "#FFFFFF",
     fontSize: 16,
-    fontWeight: '800',
+    fontWeight: "800",
     letterSpacing: 0,
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  inputRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 10,
-  },
-  input: {
-    backgroundColor: '#FFFCF6',
-    borderColor: '#D8CFC0',
-    borderRadius: 8,
-    borderWidth: 1,
-    color: '#17231E',
-    flex: 1,
-    fontSize: 17,
-    fontWeight: '600',
-    height: 52,
-    letterSpacing: 0,
-    paddingHorizontal: 16,
-  },
-  startButton: {
-    alignItems: 'center',
-    backgroundColor: '#315C4E',
-    borderRadius: 8,
-    height: 52,
-    justifyContent: 'center',
-    width: 52,
   },
 });

@@ -7,6 +7,7 @@ class StudyTimerModule extends NativeModule<StudyTimerModuleEvents> {
     _sessionName: string,
     _sessionId: string,
     _status: string,
+    _durationMs: number,
     _accumulatedElapsedMs: number,
     _runningSinceMs: number | null,
     _pausedAtMs: number | null
@@ -18,6 +19,19 @@ class StudyTimerModule extends NativeModule<StudyTimerModuleEvents> {
     _sessionName: string,
     _sessionId: string,
     _status: string,
+    _durationMs: number,
+    _accumulatedElapsedMs: number,
+    _runningSinceMs: number | null,
+    _pausedAtMs: number | null
+  ): Promise<void> {
+    throw new Error('Live Activities are only available on iOS.');
+  }
+
+  async completeActivity(
+    _sessionName: string,
+    _sessionId: string,
+    _status: string,
+    _durationMs: number,
     _accumulatedElapsedMs: number,
     _runningSinceMs: number | null,
     _pausedAtMs: number | null
@@ -40,6 +54,7 @@ function toNativeArgs(state: StudyTimerActivityState) {
     state.sessionName,
     state.sessionId,
     state.status,
+    state.durationMs,
     state.accumulatedElapsedMs,
     state.runningSinceMs,
     state.pausedAtMs,
@@ -52,6 +67,10 @@ export function startActivity(state: StudyTimerActivityState): Promise<void> {
 
 export function updateActivity(state: StudyTimerActivityState): Promise<void> {
   return webModule.updateActivity(...toNativeArgs(state));
+}
+
+export function completeActivity(state: StudyTimerActivityState): Promise<void> {
+  return webModule.completeActivity(...toNativeArgs(state));
 }
 
 export function endActivity(): Promise<void> {

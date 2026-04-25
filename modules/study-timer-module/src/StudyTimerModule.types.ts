@@ -2,12 +2,13 @@ import type { StyleProp, ViewStyle } from 'react-native';
 
 export type StudyTimerModuleEvents = Record<string, never>;
 
-export type StudyTimerStatus = 'running' | 'paused';
+export type StudyTimerStatus = 'idle' | 'running' | 'paused' | 'completed';
 
 export type StudyTimerActivityState = {
   sessionName: string;
   sessionId: string;
   status: StudyTimerStatus;
+  durationMs: number;
   accumulatedElapsedMs: number;
   runningSinceMs: number | null;
   pausedAtMs: number | null;
@@ -16,6 +17,7 @@ export type StudyTimerActivityState = {
 export type StudyTimerNativeModule = {
   startActivity(state: StudyTimerActivityState): Promise<void>;
   updateActivity(state: StudyTimerActivityState): Promise<void>;
+  completeActivity(state: StudyTimerActivityState): Promise<void>;
   endActivity(): Promise<void>;
 };
 
