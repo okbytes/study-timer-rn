@@ -70,27 +70,16 @@ struct StudyTimerLiveActivity: Widget {
     } dynamicIsland: { context in
       DynamicIsland {
         DynamicIslandExpandedRegion(.leading) {
-          HStack(spacing: 8) {
-            StudyTimerActivityIcon()
-
-            Text(context.state.displayName)
-              .font(.headline)
-              .lineLimit(1)
-              .truncationMode(.tail)
-              .minimumScaleFactor(0.8)
-          }
+          StudyTimerDynamicIslandExpandedTopRow(state: context.state)
         }
 
         DynamicIslandExpandedRegion(.trailing) {
-          StudyTimerDynamicIslandExpandedStatus(state: context.state)
-            .font(.system(.headline, design: .rounded).monospacedDigit())
-            .lineLimit(1)
-            .minimumScaleFactor(0.8)
-            .fixedSize(horizontal: true, vertical: false)
+          StudyTimerDynamicIslandProgressRing(state: context.state)
+            .frame(width: 38, height: 38)
         }
 
         DynamicIslandExpandedRegion(.bottom) {
-          StudyTimerDynamicIslandProgressBar(state: context.state)
+          StudyTimerDynamicIslandExpandedTitle(state: context.state)
         }
       } compactLeading: {
         Text(context.state.compactDisplayName)
@@ -98,16 +87,69 @@ struct StudyTimerLiveActivity: Widget {
           .lineLimit(1)
           .truncationMode(.tail)
           .minimumScaleFactor(0.75)
+          .layoutPriority(1)
       } compactTrailing: {
         StudyTimerDynamicIslandCompactStatus(state: context.state)
           .font(.caption2.monospacedDigit())
           .lineLimit(1)
-          .fixedSize(horizontal: true, vertical: false)
+          .frame(
+            minWidth: context.state.compactTrailingMinWidth,
+            idealWidth: context.state.compactTrailingIdealWidth,
+            maxWidth: context.state.compactTrailingMaxWidth,
+            alignment: .trailing
+          )
       } minimal: {
         StudyTimerDynamicIslandCompactStatus(state: context.state)
           .font(.caption2.monospacedDigit())
           .lineLimit(1)
       }
+    }
+  }
+}
+
+private struct StudyTimerDynamicIslandExpandedTopRow: View {
+  let state: StudyTimerActivityAttributes.ContentState
+
+  var body: some View {
+    HStack(spacing: 6) {
+      StudyTimerActivityIcon()
+
+      StudyTimerDynamicIslandExpandedStatus(state: state)
+        .font(.subheadline.monospacedDigit())
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+    }
+    .padding(.leading, 4)
+    .padding(.top, 2)
+  }
+}
+
+private struct StudyTimerDynamicIslandExpandedTitle: View {
+  let state: StudyTimerActivityAttributes.ContentState
+
+  var body: some View {
+    Text(state.displayName)
+      .font(.system(.title3, design: .rounded).weight(.semibold))
+      .lineLimit(2)
+      .minimumScaleFactor(0.85)
+      .truncationMode(.tail)
+      .multilineTextAlignment(.leading)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.leading, 4)
+      .padding(.top, -6)
+  }
+}
+
+private struct StudyTimerDynamicIslandExpandedStatus: View {
+  let state: StudyTimerActivityAttributes.ContentState
+
+  var body: some View {
+    if state.showsCompletedStatus {
+      Text("Done")
+    } else if let countdownInterval = state.nativeCountdownInterval {
+      Text(timerInterval: countdownInterval, countsDown: true)
+    } else {
+      StudyTimerRemainingText(state: state)
     }
   }
 }
@@ -181,38 +223,10 @@ private struct StudyTimerLockScreenTimeText: View {
   var body: some View {
     if state.showsCompletedStatus {
       StudyTimerCompletedStatus(showsText: true)
-    } else if let countdownInterval = state.countdownInterval {
+    } else if let countdownInterval = state.nativeCountdownInterval {
       Text(timerInterval: countdownInterval, countsDown: true)
     } else {
       Text(formatCompactRemainingTime(state.remaining(at: Date())))
-    }
-  }
-}
-
-private struct StudyTimerDynamicIslandStatusText: View {
-  let state: StudyTimerActivityAttributes.ContentState
-
-  var body: some View {
-    if state.showsCompletedStatus {
-      StudyTimerCompletedStatus(showsText: true)
-    } else if let countdownInterval = state.countdownInterval {
-      Text(timerInterval: countdownInterval, countsDown: true)
-    } else {
-      StudyTimerRemainingText(state: state)
-    }
-  }
-}
-
-private struct StudyTimerDynamicIslandExpandedStatus: View {
-  let state: StudyTimerActivityAttributes.ContentState
-
-  var body: some View {
-    if state.showsCompletedStatus {
-      StudyTimerCompletedStatus(showsText: true)
-    } else if let countdownInterval = state.countdownInterval {
-      Text(timerInterval: countdownInterval, countsDown: true)
-    } else {
-      StudyTimerRemainingText(state: state)
     }
   }
 }
@@ -223,7 +237,7 @@ private struct StudyTimerDynamicIslandCompactStatus: View {
   var body: some View {
     if state.showsCompletedStatus {
       StudyTimerCompletedStatus(showsText: false)
-    } else if let countdownInterval = state.countdownInterval {
+    } else if let countdownInterval = state.nativeCountdownInterval {
       Text(timerInterval: countdownInterval, countsDown: true)
     } else {
       StudyTimerRemainingText(state: state)
@@ -240,7 +254,7 @@ private struct StudyTimerDynamicIslandProgressBar: View {
         ProgressView(value: 1.0)
           .progressViewStyle(.linear)
           .tint(.blue)
-      } else if let countdownInterval = state.countdownInterval {
+      } else if let countdownInterval = state.nativeCountdownInterval {
         ProgressView(timerInterval: countdownInterval, countsDown: true) {
           EmptyView()
         } currentValueLabel: {
@@ -255,6 +269,33 @@ private struct StudyTimerDynamicIslandProgressBar: View {
       }
     }
     .frame(height: 6)
+  }
+}
+
+private struct StudyTimerDynamicIslandProgressRing: View {
+  let state: StudyTimerActivityAttributes.ContentState
+
+  var body: some View {
+    Group {
+      if state.showsCompletedStatus {
+        ProgressView(value: 1.0)
+          .progressViewStyle(.circular)
+          .tint(.blue)
+      } else if let countdownInterval = state.nativeCountdownInterval {
+        ProgressView(timerInterval: countdownInterval, countsDown: true) {
+          EmptyView()
+        } currentValueLabel: {
+          EmptyView()
+        }
+        .progressViewStyle(.circular)
+        .tint(.blue)
+      } else {
+        ProgressView(value: state.progress(at: Date()))
+          .progressViewStyle(.circular)
+          .tint(.blue)
+      }
+    }
+    .controlSize(.large)
   }
 }
 
@@ -290,7 +331,7 @@ extension StudyTimerActivityAttributes.ContentState {
 
   fileprivate var compactDisplayName: String {
     let name = displayName
-    let maxCharacterCount = 16
+    let maxCharacterCount = compactLeadingCharacterLimit
 
     guard name.count > maxCharacterCount else {
       return name
@@ -298,6 +339,26 @@ extension StudyTimerActivityAttributes.ContentState {
 
     let endIndex = name.index(name.startIndex, offsetBy: maxCharacterCount - 1)
     return "\(name[..<endIndex])…"
+  }
+
+  fileprivate var prefersHourTimerWidth: Bool {
+    remaining(at: Date()) >= 3_600_000
+  }
+
+  fileprivate var compactLeadingCharacterLimit: Int {
+    prefersHourTimerWidth ? 10 : 14
+  }
+
+  fileprivate var compactTrailingMinWidth: CGFloat {
+    prefersHourTimerWidth ? 44 : 36
+  }
+
+  fileprivate var compactTrailingIdealWidth: CGFloat {
+    prefersHourTimerWidth ? 50 : 42
+  }
+
+  fileprivate var compactTrailingMaxWidth: CGFloat {
+    prefersHourTimerWidth ? 56 : 48
   }
 
   fileprivate var isRunning: Bool {
@@ -347,6 +408,25 @@ extension StudyTimerActivityAttributes.ContentState {
     }
 
     return runningSince...endDate
+  }
+
+  fileprivate var nativeCountdownInterval: ClosedRange<Date>? {
+    if let countdownInterval {
+      return countdownInterval
+    }
+
+    guard isRunning, safeDurationMs > 0 else {
+      return nil
+    }
+
+    let remainingMs = max(safeDurationMs - safeAccumulatedElapsedMs, 0)
+    guard remainingMs > 0 else {
+      return nil
+    }
+
+    let now = Date()
+    let endDate = now.addingTimeInterval(remainingMs / 1_000)
+    return now...endDate
   }
 
   fileprivate func elapsed(at date: Date) -> Double {

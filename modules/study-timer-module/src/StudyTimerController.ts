@@ -4,9 +4,9 @@ import type {
   StudyTimerController,
   StudyTimerDraft,
   StudyTimerSnapshot,
-} from './StudyTimerModule.types';
+} from "./StudyTimerModule.types";
 
-export const DEFAULT_SESSION_NAME = 'Study Timer';
+export const DEFAULT_SESSION_NAME = "My Study Timer session";
 export const MINUTE_MS = 60 * 1000;
 export const FINE_DURATION_STEP_MINUTES = 1;
 export const DURATION_STEP_MINUTES = 5;
@@ -30,7 +30,9 @@ function clamp(value: number, min: number, max: number) {
 }
 
 export function getStudyTimerDurationStepMs(durationMs: number) {
-  return durationMs <= DURATION_STEP_MS ? FINE_DURATION_STEP_MS : DURATION_STEP_MS;
+  return durationMs <= DURATION_STEP_MS
+    ? FINE_DURATION_STEP_MS
+    : DURATION_STEP_MS;
 }
 
 export function normalizeStudyTimerDurationMs(durationMs: number) {
@@ -58,7 +60,7 @@ function getElapsedMs(session: StudyTimerCheckpoint | null, nowMs: number) {
     return 0;
   }
 
-  if (session.status !== 'running') {
+  if (session.status !== "running") {
     return clamp(session.accumulatedElapsedMs, 0, session.durationMs);
   }
 
@@ -67,17 +69,17 @@ function getElapsedMs(session: StudyTimerCheckpoint | null, nowMs: number) {
   return clamp(
     session.accumulatedElapsedMs + (nowMs - runningSinceMs),
     0,
-    session.durationMs
+    session.durationMs,
   );
 }
 
 function createCompletedCheckpoint(
   session: StudyTimerCheckpoint,
-  completedAtMs: number
+  completedAtMs: number,
 ): StudyTimerCheckpoint {
   return {
     ...session,
-    status: 'completed',
+    status: "completed",
     accumulatedElapsedMs: session.durationMs,
     runningSinceMs: null,
     pausedAtMs: completedAtMs,
@@ -99,8 +101,13 @@ export function createStudyTimerController({
 
   function buildSnapshot(): StudyTimerSnapshot {
     const elapsedMs = getElapsedMs(session, nowMs);
-    const remainingMs = session ? Math.max(session.durationMs - elapsedMs, 0) : draft.durationMs;
-    const progress = session && session.durationMs > 0 ? clamp(elapsedMs / session.durationMs, 0, 1) : 0;
+    const remainingMs = session
+      ? Math.max(session.durationMs - elapsedMs, 0)
+      : draft.durationMs;
+    const progress =
+      session && session.durationMs > 0
+        ? clamp(elapsedMs / session.durationMs, 0, 1)
+        : 0;
 
     return {
       draft: { ...draft },
@@ -133,7 +140,7 @@ export function createStudyTimerController({
   }
 
   async function syncCompletion(completedAtMs: number) {
-    if (!session || session.status !== 'running') {
+    if (!session || session.status !== "running") {
       return;
     }
 
@@ -144,7 +151,7 @@ export function createStudyTimerController({
   }
 
   function reconcileCompletion(currentTimeMs: number) {
-    if (!session || session.status !== 'running') {
+    if (!session || session.status !== "running") {
       return false;
     }
 
@@ -198,7 +205,7 @@ export function createStudyTimerController({
       session = {
         sessionName: draft.sessionName,
         sessionId: createSessionId(),
-        status: 'running',
+        status: "running",
         durationMs: draft.durationMs,
         accumulatedElapsedMs: 0,
         runningSinceMs: startedAtMs,
@@ -209,7 +216,7 @@ export function createStudyTimerController({
       await liveActivity.sync(session);
     },
     async pause() {
-      if (!session || session.status !== 'running') {
+      if (!session || session.status !== "running") {
         return;
       }
 
@@ -223,7 +230,7 @@ export function createStudyTimerController({
 
       session = {
         ...session,
-        status: 'paused',
+        status: "paused",
         accumulatedElapsedMs,
         runningSinceMs: null,
         pausedAtMs,
@@ -233,7 +240,7 @@ export function createStudyTimerController({
       await liveActivity.sync(session);
     },
     async resume() {
-      if (!session || session.status !== 'paused') {
+      if (!session || session.status !== "paused") {
         return;
       }
 
@@ -248,7 +255,7 @@ export function createStudyTimerController({
 
       session = {
         ...session,
-        status: 'running',
+        status: "running",
         runningSinceMs: resumedAtMs,
         pausedAtMs: null,
       };

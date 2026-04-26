@@ -18,9 +18,10 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
   DEFAULT_SESSION_NAME,
+  DURATION_STEP_MS,
+  FINE_DURATION_STEP_MS,
   createIosLiveActivityAdapter,
   createStudyTimerController,
-  getStudyTimerDurationStepMs,
   normalizeStudyTimerDraftName,
   normalizeStudyTimerDurationMs,
   type StudyTimerController,
@@ -89,8 +90,16 @@ export default function HomeScreen() {
   const sessionName = session?.sessionName ?? snapshot.draft.sessionName;
   const plannedDurationMs = snapshot.draft.durationMs;
 
-  const pickerStepMs = getStudyTimerDurationStepMs(tempPickerDurationMs);
-  const pickerStepMinutes = pickerStepMs / MINUTE_MS;
+  const pickerDecreaseStepMs =
+    tempPickerDurationMs <= DURATION_STEP_MS
+      ? FINE_DURATION_STEP_MS
+      : DURATION_STEP_MS;
+  const pickerIncreaseStepMs =
+    tempPickerDurationMs < DURATION_STEP_MS
+      ? FINE_DURATION_STEP_MS
+      : DURATION_STEP_MS;
+  const pickerDecreaseStepMinutes = pickerDecreaseStepMs / MINUTE_MS;
+  const pickerIncreaseStepMinutes = pickerIncreaseStepMs / MINUTE_MS;
   const backdropOpacity = pickerAnimation.interpolate({
     inputRange: [0, 1],
     outputRange: [0, 1],
@@ -212,7 +221,8 @@ export default function HomeScreen() {
     await timerController.stop();
   };
 
-  const progressWidth = `${clamp(snapshot.progress, 0, 1) * 100}%` as DimensionValue;
+  const progressWidth =
+    `${clamp(snapshot.progress, 0, 1) * 100}%` as DimensionValue;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -226,9 +236,7 @@ export default function HomeScreen() {
             editable={!snapshot.isDraftLocked}
             onBlur={() => commitDraftName(sessionName)}
             onChangeText={updateSessionName}
-            onSubmitEditing={(event) =>
-              commitDraftName(event.nativeEvent.text)
-            }
+            onSubmitEditing={(event) => commitDraftName(event.nativeEvent.text)}
             placeholder={DEFAULT_SESSION_NAME}
             placeholderTextColor="#7C8580"
             returnKeyType="done"
@@ -293,12 +301,12 @@ export default function HomeScreen() {
 
                 <View style={styles.fineTuneRow}>
                   <Pressable
-                    accessibilityLabel={`Decrease duration by ${pickerStepMinutes} minute${pickerStepMinutes === 1 ? "" : "s"}`}
+                    accessibilityLabel={`Decrease duration by ${pickerDecreaseStepMinutes} minute${pickerDecreaseStepMinutes === 1 ? "" : "s"}`}
                     accessibilityRole="button"
                     onPress={() =>
                       setTempPickerDurationMs((prev) =>
                         normalizeStudyTimerDurationMs(
-                          prev - getStudyTimerDurationStepMs(prev),
+                          prev - pickerDecreaseStepMs,
                         ),
                       )
                     }
@@ -313,12 +321,12 @@ export default function HomeScreen() {
                     {formatDurationDisplay(tempPickerDurationMs)}
                   </Text>
                   <Pressable
-                    accessibilityLabel={`Increase duration by ${pickerStepMinutes} minute${pickerStepMinutes === 1 ? "" : "s"}`}
+                    accessibilityLabel={`Increase duration by ${pickerIncreaseStepMinutes} minute${pickerIncreaseStepMinutes === 1 ? "" : "s"}`}
                     accessibilityRole="button"
                     onPress={() =>
                       setTempPickerDurationMs((prev) =>
                         normalizeStudyTimerDurationMs(
-                          prev + getStudyTimerDurationStepMs(prev),
+                          prev + pickerIncreaseStepMs,
                         ),
                       )
                     }
@@ -417,9 +425,7 @@ export default function HomeScreen() {
               ]}
             >
               <Ionicons name="play" size={18} color="#FFFFFF" />
-              <Text style={styles.startSessionButtonText}>
-                Start Study Session
-              </Text>
+              <Text style={styles.startSessionButtonText}>Start</Text>
             </Pressable>
           )}
         </View>
