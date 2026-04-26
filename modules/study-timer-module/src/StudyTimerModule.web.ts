@@ -1,6 +1,6 @@
 import { NativeModule, registerWebModule } from 'expo';
 
-import type { StudyTimerActivityState, StudyTimerModuleEvents } from './StudyTimerModule.types';
+import type { StudyTimerCheckpoint, StudyTimerModuleEvents } from './StudyTimerModule.types';
 
 class StudyTimerModule extends NativeModule<StudyTimerModuleEvents> {
   async startActivity(
@@ -49,7 +49,7 @@ const webModule = registerWebModule(
   'StudyTimerModule'
 ) as unknown as StudyTimerModule;
 
-function toNativeArgs(state: StudyTimerActivityState) {
+function toNativeArgs(state: StudyTimerCheckpoint) {
   return [
     state.sessionName,
     state.sessionId,
@@ -61,15 +61,15 @@ function toNativeArgs(state: StudyTimerActivityState) {
   ] as const;
 }
 
-export function startActivity(state: StudyTimerActivityState): Promise<void> {
+export function startActivity(state: StudyTimerCheckpoint): Promise<void> {
   return webModule.startActivity(...toNativeArgs(state));
 }
 
-export function updateActivity(state: StudyTimerActivityState): Promise<void> {
+export function updateActivity(state: StudyTimerCheckpoint): Promise<void> {
   return webModule.updateActivity(...toNativeArgs(state));
 }
 
-export function completeActivity(state: StudyTimerActivityState): Promise<void> {
+export function completeActivity(state: StudyTimerCheckpoint): Promise<void> {
   return webModule.completeActivity(...toNativeArgs(state));
 }
 

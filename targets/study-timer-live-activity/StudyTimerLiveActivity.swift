@@ -70,55 +70,43 @@ struct StudyTimerLiveActivity: Widget {
     } dynamicIsland: { context in
       DynamicIsland {
         DynamicIslandExpandedRegion(.leading) {
-          VStack(alignment: .leading, spacing: 4) {
+          HStack(spacing: 8) {
+            StudyTimerActivityIcon()
+
             Text(context.state.displayName)
               .font(.headline)
               .lineLimit(1)
-
-            if let countdownInterval = context.state.countdownInterval {
-              Text(timerInterval: countdownInterval, countsDown: true)
-                .font(.system(.title3, design: .rounded).monospacedDigit())
-            } else {
-              StudyTimerRemainingText(state: context.state)
-                .font(.system(.title3, design: .rounded).monospacedDigit())
-            }
+              .truncationMode(.tail)
+              .minimumScaleFactor(0.8)
           }
         }
 
-        DynamicIslandExpandedRegion(.center) {
-          StudyTimerProgressRing(state: context.state)
-            .frame(width: 28, height: 28)
+        DynamicIslandExpandedRegion(.trailing) {
+          StudyTimerDynamicIslandExpandedStatus(state: context.state)
+            .font(.system(.headline, design: .rounded).monospacedDigit())
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .fixedSize(horizontal: true, vertical: false)
         }
 
-        DynamicIslandExpandedRegion(.trailing) {
-          // Empty for balanced layout
+        DynamicIslandExpandedRegion(.bottom) {
+          StudyTimerDynamicIslandProgressBar(state: context.state)
         }
       } compactLeading: {
-        Text(context.state.displayName)
+        Text(context.state.compactDisplayName)
           .font(.caption2)
           .lineLimit(1)
           .truncationMode(.tail)
-          .foregroundStyle(.primary)
+          .minimumScaleFactor(0.75)
       } compactTrailing: {
-        if let countdownInterval = context.state.countdownInterval {
-          Text(timerInterval: countdownInterval, countsDown: true)
-            .font(.caption2.monospacedDigit())
-            .lineLimit(1)
-        } else {
-          StudyTimerRemainingText(state: context.state)
-            .font(.caption2.monospacedDigit())
-            .lineLimit(1)
-        }
+        StudyTimerDynamicIslandCompactStatus(state: context.state)
+          .font(.caption2.monospacedDigit())
+          .lineLimit(1)
+          .fixedSize(horizontal: true, vertical: false)
       } minimal: {
-        if let countdownInterval = context.state.countdownInterval {
-          Text(timerInterval: countdownInterval, countsDown: true)
-            .font(.caption2.monospacedDigit())
-            .lineLimit(1)
-        } else {
-          StudyTimerRemainingText(state: context.state)
-            .font(.caption2.monospacedDigit())
-            .lineLimit(1)
-        }
+        StudyTimerDynamicIslandCompactStatus(state: context.state)
+          .font(.caption2.monospacedDigit())
+          .lineLimit(1)
       }
     }
   }
@@ -167,26 +155,15 @@ private struct StudyTimerLockScreenTitle: View {
 
   var body: some View {
     HStack(spacing: 12) {
-      Image(systemName: "book.closed.fill")
-        .foregroundStyle(.blue)
-        .fixedSize()
+      StudyTimerActivityIcon()
 
       Text(state.displayName)
         .font(.headline)
         .lineLimit(1)
         .truncationMode(.tail)
+        .minimumScaleFactor(0.8)
+        .layoutPriority(1)
     }
-  }
-}
-
-private struct StudyTimerTitleText: View {
-  let state: StudyTimerActivityAttributes.ContentState
-
-  var body: some View {
-    Text(state.displayName)
-      .lineLimit(1)
-      .truncationMode(.tail)
-      .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
   }
 }
 
@@ -202,7 +179,9 @@ private struct StudyTimerLockScreenTimeText: View {
   let state: StudyTimerActivityAttributes.ContentState
 
   var body: some View {
-    if let countdownInterval = state.countdownInterval {
+    if state.showsCompletedStatus {
+      StudyTimerCompletedStatus(showsText: true)
+    } else if let countdownInterval = state.countdownInterval {
       Text(timerInterval: countdownInterval, countsDown: true)
     } else {
       Text(formatCompactRemainingTime(state.remaining(at: Date())))
@@ -210,23 +189,96 @@ private struct StudyTimerLockScreenTimeText: View {
   }
 }
 
-private struct StudyTimerProgressRing: View {
+private struct StudyTimerDynamicIslandStatusText: View {
   let state: StudyTimerActivityAttributes.ContentState
 
   var body: some View {
-    TimelineView(.periodic(from: Date(), by: 1)) { timeline in
-      let progress = state.progress(at: timeline.date)
+    if state.showsCompletedStatus {
+      StudyTimerCompletedStatus(showsText: true)
+    } else if let countdownInterval = state.countdownInterval {
+      Text(timerInterval: countdownInterval, countsDown: true)
+    } else {
+      StudyTimerRemainingText(state: state)
+    }
+  }
+}
 
-      ZStack {
-        Circle()
-          .stroke(.secondary.opacity(0.25), lineWidth: 3)
-        Circle()
-          .trim(from: 0, to: progress)
-          .stroke(.blue, style: StrokeStyle(lineWidth: 3, lineCap: .round))
-          .rotationEffect(.degrees(-90))
+private struct StudyTimerDynamicIslandExpandedStatus: View {
+  let state: StudyTimerActivityAttributes.ContentState
+
+  var body: some View {
+    if state.showsCompletedStatus {
+      StudyTimerCompletedStatus(showsText: true)
+    } else if let countdownInterval = state.countdownInterval {
+      Text(timerInterval: countdownInterval, countsDown: true)
+    } else {
+      StudyTimerRemainingText(state: state)
+    }
+  }
+}
+
+private struct StudyTimerDynamicIslandCompactStatus: View {
+  let state: StudyTimerActivityAttributes.ContentState
+
+  var body: some View {
+    if state.showsCompletedStatus {
+      StudyTimerCompletedStatus(showsText: false)
+    } else if let countdownInterval = state.countdownInterval {
+      Text(timerInterval: countdownInterval, countsDown: true)
+    } else {
+      StudyTimerRemainingText(state: state)
+    }
+  }
+}
+
+private struct StudyTimerDynamicIslandProgressBar: View {
+  let state: StudyTimerActivityAttributes.ContentState
+
+  var body: some View {
+    Group {
+      if state.showsCompletedStatus {
+        ProgressView(value: 1.0)
+          .progressViewStyle(.linear)
+          .tint(.blue)
+      } else if let countdownInterval = state.countdownInterval {
+        ProgressView(timerInterval: countdownInterval, countsDown: true) {
+          EmptyView()
+        } currentValueLabel: {
+          EmptyView()
+        }
+        .progressViewStyle(.linear)
+        .tint(.blue)
+      } else {
+        ProgressView(value: state.progress(at: Date()))
+          .progressViewStyle(.linear)
+          .tint(.blue)
       }
     }
-    .frame(width: 28, height: 28)
+    .frame(height: 6)
+  }
+}
+
+private struct StudyTimerCompletedStatus: View {
+  let showsText: Bool
+
+  var body: some View {
+    HStack(spacing: 4) {
+      Image(systemName: "checkmark.circle.fill")
+        .foregroundStyle(.green)
+
+      if showsText {
+        Text("Done")
+      }
+    }
+    .fixedSize(horizontal: true, vertical: false)
+  }
+}
+
+private struct StudyTimerActivityIcon: View {
+  var body: some View {
+    Image(systemName: "book.closed.fill")
+      .foregroundStyle(.blue)
+      .fixedSize()
   }
 }
 
@@ -236,12 +288,36 @@ extension StudyTimerActivityAttributes.ContentState {
     return trimmedName.isEmpty ? defaultSessionName : trimmedName
   }
 
+  fileprivate var compactDisplayName: String {
+    let name = displayName
+    let maxCharacterCount = 16
+
+    guard name.count > maxCharacterCount else {
+      return name
+    }
+
+    let endIndex = name.index(name.startIndex, offsetBy: maxCharacterCount - 1)
+    return "\(name[..<endIndex])…"
+  }
+
   fileprivate var isRunning: Bool {
     status == StudyTimerStatus.running.rawValue
   }
 
   fileprivate var isCompleted: Bool {
     status == StudyTimerStatus.completed.rawValue
+  }
+
+  fileprivate var showsCompletedStatus: Bool {
+    if isCompleted {
+      return true
+    }
+
+    guard isRunning, let endDate else {
+      return false
+    }
+
+    return endDate <= Date()
   }
 
   fileprivate var safeDurationMs: Double {

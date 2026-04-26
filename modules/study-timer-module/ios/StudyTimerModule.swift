@@ -226,7 +226,7 @@ private enum StudyTimerActivityController {
 
       await activity.end(
         using: state,
-        dismissalPolicy: .default
+        dismissalPolicy: .immediate
       )
     }
   }

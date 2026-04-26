@@ -1,9 +1,9 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { DimensionValue } from "react-native";
 import {
   Animated,
-  Alert,
+  AppState,
   Easing,
   KeyboardAvoidingView,
   Modal,
@@ -16,51 +16,18 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import type { StudyTimerActivityState } from "@/modules/study-timer-module";
 import {
-  completeActivity,
-  endActivity,
-  startActivity,
-  updateActivity,
+  DEFAULT_SESSION_NAME,
+  createIosLiveActivityAdapter,
+  createStudyTimerController,
+  getStudyTimerDurationStepMs,
+  normalizeStudyTimerDraftName,
+  normalizeStudyTimerDurationMs,
+  type StudyTimerController,
 } from "@/modules/study-timer-module";
 
-const DEFAULT_SESSION_NAME = "Study Timer";
-const DEFAULT_DURATION_MS = 25 * 60 * 1000;
+const DEFAULT_DURATION_MS = 60 * 1000;
 const MINUTE_MS = 60 * 1000;
-const DURATION_STEP_MINUTES = 5;
-const DURATION_STEP_MS = DURATION_STEP_MINUTES * MINUTE_MS;
-const MIN_DURATION_MS = DURATION_STEP_MS;
-const MAX_DURATION_MS = (24 * 60 - DURATION_STEP_MINUTES) * MINUTE_MS;
-
-type TimerSessionBase = {
-  sessionName: string;
-  sessionId: string;
-  durationMs: number;
-  accumulatedElapsedMs: number;
-};
-
-type RunningTimerSession = TimerSessionBase & {
-  status: "running";
-  runningSinceMs: number;
-  pausedAtMs: null;
-};
-
-type PausedTimerSession = TimerSessionBase & {
-  status: "paused";
-  runningSinceMs: null;
-  pausedAtMs: number;
-};
-
-type CompletedTimerSession = TimerSessionBase & {
-  status: "completed";
-  runningSinceMs: null;
-  pausedAtMs: number;
-};
-
-type TimerSession =
-  | RunningTimerSession
-  | PausedTimerSession
-  | CompletedTimerSession;
 
 function clamp(value: number, min: number, max: number) {
   if (!Number.isFinite(value)) {
@@ -68,17 +35,6 @@ function clamp(value: number, min: number, max: number) {
   }
 
   return Math.min(Math.max(value, min), max);
-}
-
-function normalizeDurationMs(durationMs: number) {
-  if (!Number.isFinite(durationMs)) {
-    return DEFAULT_DURATION_MS;
-  }
-
-  const roundedDurationMs =
-    Math.round(durationMs / DURATION_STEP_MS) * DURATION_STEP_MS;
-
-  return clamp(roundedDurationMs, MIN_DURATION_MS, MAX_DURATION_MS);
 }
 
 function formatRemainingTime(totalMs: number) {
@@ -93,7 +49,9 @@ function formatRemainingTime(totalMs: number) {
 }
 
 function formatDurationDisplay(durationMs: number) {
-  const totalMinutes = Math.floor(normalizeDurationMs(durationMs) / MINUTE_MS);
+  const totalMinutes = Math.floor(
+    normalizeStudyTimerDurationMs(durationMs) / MINUTE_MS,
+  );
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
 
@@ -108,100 +66,31 @@ function formatDurationDisplay(durationMs: number) {
   return `${hours} hr ${minutes} min`;
 }
 
-async function callLiveActivity(action: () => Promise<void>) {
-  if (Platform.OS !== "ios") {
-    return;
-  }
-
-  try {
-    await action();
-  } catch (error) {
-    console.warn("Live Activity bridge call failed", error);
-    Alert.alert("Live Activity failed", getErrorMessage(error));
-  }
-}
-
-function getErrorMessage(error: unknown) {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  if (typeof error === "string") {
-    return error;
-  }
-
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return "Unknown Live Activity error.";
-  }
-}
-
-function createSessionId() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
-function getElapsedMs(session: TimerSession | null, currentTimeMs: number) {
-  if (!session) {
-    return 0;
-  }
-
-  if (session.status !== "running") {
-    return clamp(session.accumulatedElapsedMs, 0, session.durationMs);
-  }
-
-  return clamp(
-    session.accumulatedElapsedMs + (currentTimeMs - session.runningSinceMs),
-    0,
-    session.durationMs,
-  );
-}
-
-function getRemainingMs(session: TimerSession | null, currentTimeMs: number) {
-  if (!session) {
-    return 0;
-  }
-
-  return Math.max(session.durationMs - getElapsedMs(session, currentTimeMs), 0);
-}
-
-function toActivityState(session: TimerSession): StudyTimerActivityState {
-  return {
-    sessionName: session.sessionName,
-    sessionId: session.sessionId,
-    status: session.status,
-    durationMs: session.durationMs,
-    accumulatedElapsedMs: session.accumulatedElapsedMs,
-    runningSinceMs: session.runningSinceMs,
-    pausedAtMs: session.pausedAtMs,
-  };
-}
-
-function normalizeSessionName(name: string) {
-  return name.trim() || DEFAULT_SESSION_NAME;
-}
-
 export default function HomeScreen() {
-  const [sessionName, setSessionName] = useState(DEFAULT_SESSION_NAME);
-  const [plannedDurationMs, setPlannedDurationMs] =
-    useState(DEFAULT_DURATION_MS);
   const [showPicker, setShowPicker] = useState(false);
   const [tempPickerDurationMs, setTempPickerDurationMs] =
     useState(DEFAULT_DURATION_MS);
-  const [session, setSession] = useState<TimerSession | null>(null);
-  const [now, setNow] = useState(() => Date.now());
   const pickerAnimation = useRef(new Animated.Value(0)).current;
+  const timerControllerRef = useRef<StudyTimerController | null>(null);
 
-  const displayDurationMs = session?.durationMs ?? plannedDurationMs;
-  const elapsedMs = useMemo(() => getElapsedMs(session, now), [now, session]);
-  const remainingMs = useMemo(() => {
-    if (!session) {
-      return plannedDurationMs;
-    }
+  if (!timerControllerRef.current) {
+    timerControllerRef.current = createStudyTimerController({
+      liveActivity: createIosLiveActivityAdapter(),
+    });
+  }
 
-    return getRemainingMs(session, now);
-  }, [now, plannedDurationMs, session]);
-  const progress = displayDurationMs > 0 ? elapsedMs / displayDurationMs : 0;
+  const timerController = timerControllerRef.current!;
+  const snapshot = useSyncExternalStore(
+    timerController.subscribe,
+    timerController.getSnapshot,
+    timerController.getSnapshot,
+  );
+  const session = snapshot.session;
+  const sessionName = session?.sessionName ?? snapshot.draft.sessionName;
+  const plannedDurationMs = snapshot.draft.durationMs;
+
+  const pickerStepMs = getStudyTimerDurationStepMs(tempPickerDurationMs);
+  const pickerStepMinutes = pickerStepMs / MINUTE_MS;
   const backdropOpacity = pickerAnimation.interpolate({
     inputRange: [0, 1],
     outputRange: [0, 1],
@@ -212,31 +101,26 @@ export default function HomeScreen() {
   });
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setNow(Date.now());
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    if (!session || session.status !== "running" || remainingMs > 0) {
+    if (session?.status !== "running") {
       return;
     }
 
-    const completedAt = Date.now();
-    const nextSession: TimerSession = {
-      ...session,
-      status: "completed",
-      accumulatedElapsedMs: session.durationMs,
-      runningSinceMs: null,
-      pausedAtMs: completedAt,
-    };
+    const interval = setInterval(() => {
+      timerController.tick();
+    }, 1000);
 
-    setNow(completedAt);
-    setSession(nextSession);
-    void callLiveActivity(() => completeActivity(toActivityState(nextSession)));
-  }, [remainingMs, session]);
+    return () => clearInterval(interval);
+  }, [session?.status, timerController]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") {
+        void timerController.appBecameActive();
+      }
+    });
+
+    return () => subscription.remove();
+  }, [timerController]);
 
   useEffect(() => {
     if (!session || !showPicker) {
@@ -261,17 +145,8 @@ export default function HomeScreen() {
     }).start();
   }, [pickerAnimation, showPicker]);
 
-  const completeSession = async (nextSession: CompletedTimerSession) => {
-    setNow(nextSession.pausedAtMs);
-    setSession(nextSession);
-
-    await callLiveActivity(() =>
-      completeActivity(toActivityState(nextSession)),
-    );
-  };
-
   const openDurationPicker = () => {
-    if (session) {
+    if (snapshot.isDraftLocked) {
       return;
     }
 
@@ -296,150 +171,48 @@ export default function HomeScreen() {
   };
 
   const commitDurationPicker = () => {
-    if (session) {
+    if (snapshot.isDraftLocked) {
       closeDurationPicker();
       return;
     }
 
-    setPlannedDurationMs(normalizeDurationMs(tempPickerDurationMs));
+    timerController.setDraftDuration(tempPickerDurationMs);
     closeDurationPicker();
   };
 
+  const commitDraftName = (name: string) => {
+    if (snapshot.isDraftLocked) {
+      return;
+    }
+
+    timerController.setDraftName(normalizeStudyTimerDraftName(name));
+  };
+
   const beginSession = async () => {
-    const name = normalizeSessionName(sessionName);
-    const durationMs = normalizeDurationMs(plannedDurationMs);
-    const runningSinceMs = Date.now();
-    const nextSession: TimerSession = {
-      sessionName: name,
-      sessionId: createSessionId(),
-      status: "running",
-      durationMs,
-      accumulatedElapsedMs: 0,
-      runningSinceMs,
-      pausedAtMs: null,
-    };
-
-    setNow(runningSinceMs);
-    setSessionName(name);
-    setPlannedDurationMs(durationMs);
-    setSession(nextSession);
-
-    await callLiveActivity(() => startActivity(toActivityState(nextSession)));
+    await timerController.start();
   };
 
   const updateSessionName = (nextName: string) => {
-    setSessionName(nextName);
-
-    if (!session) {
+    if (snapshot.isDraftLocked) {
       return;
     }
 
-    setSession({
-      ...session,
-      sessionName: normalizeSessionName(nextName),
-    });
-  };
-
-  const normalizeEditableSessionName = () => {
-    const normalizedName = normalizeSessionName(sessionName);
-
-    if (normalizedName !== sessionName) {
-      setSessionName(normalizedName);
-    }
-
-    if (session && normalizedName !== session.sessionName) {
-      setSession({
-        ...session,
-        sessionName: normalizedName,
-      });
-    }
-
-    return normalizedName;
-  };
-
-  const syncSessionNameToLiveActivity = async () => {
-    if (!session) {
-      normalizeEditableSessionName();
-      return;
-    }
-
-    const normalizedName = normalizeEditableSessionName();
-    const nextSession = {
-      ...session,
-      sessionName: normalizedName,
-    };
-
-    await callLiveActivity(() => updateActivity(toActivityState(nextSession)));
+    timerController.setDraftName(nextName);
   };
 
   const pauseSession = async () => {
-    if (!session || session.status !== "running") {
-      return;
-    }
-
-    const pausedAt = Date.now();
-    const accumulatedElapsedMs = getElapsedMs(session, pausedAt);
-
-    if (accumulatedElapsedMs >= session.durationMs) {
-      await completeSession({
-        ...session,
-        status: "completed",
-        accumulatedElapsedMs: session.durationMs,
-        runningSinceMs: null,
-        pausedAtMs: pausedAt,
-      });
-      return;
-    }
-
-    const nextSession: TimerSession = {
-      ...session,
-      status: "paused",
-      accumulatedElapsedMs,
-      runningSinceMs: null,
-      pausedAtMs: pausedAt,
-    };
-
-    setNow(pausedAt);
-    setSession(nextSession);
-
-    await callLiveActivity(() => updateActivity(toActivityState(nextSession)));
+    await timerController.pause();
   };
 
   const resumeSession = async () => {
-    if (!session || session.status !== "paused") {
-      return;
-    }
-
-    if (session.accumulatedElapsedMs >= session.durationMs) {
-      await completeSession({
-        ...session,
-        status: "completed",
-        accumulatedElapsedMs: session.durationMs,
-        pausedAtMs: Date.now(),
-      });
-      return;
-    }
-
-    const runningSinceMs = Date.now();
-    const nextSession: TimerSession = {
-      ...session,
-      status: "running",
-      runningSinceMs,
-      pausedAtMs: null,
-    };
-
-    setNow(runningSinceMs);
-    setSession(nextSession);
-
-    await callLiveActivity(() => updateActivity(toActivityState(nextSession)));
+    await timerController.resume();
   };
 
   const stopSession = async () => {
-    setSession(null);
-    await callLiveActivity(endActivity);
+    await timerController.stop();
   };
 
-  const progressWidth = `${clamp(progress, 0, 1) * 100}%` as DimensionValue;
+  const progressWidth = `${clamp(snapshot.progress, 0, 1) * 100}%` as DimensionValue;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -450,9 +223,12 @@ export default function HomeScreen() {
         <View style={styles.timerPanel}>
           <TextInput
             accessibilityLabel="Session name"
-            onBlur={() => void syncSessionNameToLiveActivity()}
+            editable={!snapshot.isDraftLocked}
+            onBlur={() => commitDraftName(sessionName)}
             onChangeText={updateSessionName}
-            onSubmitEditing={() => void syncSessionNameToLiveActivity()}
+            onSubmitEditing={(event) =>
+              commitDraftName(event.nativeEvent.text)
+            }
             placeholder={DEFAULT_SESSION_NAME}
             placeholderTextColor="#7C8580"
             returnKeyType="done"
@@ -464,7 +240,7 @@ export default function HomeScreen() {
             <>
               <View style={styles.timerTextContainer}>
                 <Text style={styles.remaining}>
-                  {formatRemainingTime(remainingMs)}
+                  {formatRemainingTime(snapshot.remainingMs)}
                 </Text>
               </View>
               <View style={styles.progressTrack}>
@@ -484,7 +260,7 @@ export default function HomeScreen() {
                 ]}
               >
                 <Text style={styles.remaining}>
-                  {formatRemainingTime(remainingMs)}
+                  {formatRemainingTime(snapshot.remainingMs)}
                 </Text>
               </Pressable>
             </View>
@@ -517,11 +293,13 @@ export default function HomeScreen() {
 
                 <View style={styles.fineTuneRow}>
                   <Pressable
-                    accessibilityLabel="Decrease duration by 5 minutes"
+                    accessibilityLabel={`Decrease duration by ${pickerStepMinutes} minute${pickerStepMinutes === 1 ? "" : "s"}`}
                     accessibilityRole="button"
                     onPress={() =>
                       setTempPickerDurationMs((prev) =>
-                        normalizeDurationMs(prev - DURATION_STEP_MS),
+                        normalizeStudyTimerDurationMs(
+                          prev - getStudyTimerDurationStepMs(prev),
+                        ),
                       )
                     }
                     style={({ pressed }) => [
@@ -535,11 +313,13 @@ export default function HomeScreen() {
                     {formatDurationDisplay(tempPickerDurationMs)}
                   </Text>
                   <Pressable
-                    accessibilityLabel="Increase duration by 5 minutes"
+                    accessibilityLabel={`Increase duration by ${pickerStepMinutes} minute${pickerStepMinutes === 1 ? "" : "s"}`}
                     accessibilityRole="button"
                     onPress={() =>
                       setTempPickerDurationMs((prev) =>
-                        normalizeDurationMs(prev + DURATION_STEP_MS),
+                        normalizeStudyTimerDurationMs(
+                          prev + getStudyTimerDurationStepMs(prev),
+                        ),
                       )
                     }
                     style={({ pressed }) => [
