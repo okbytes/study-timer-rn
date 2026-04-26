@@ -70,35 +70,55 @@ struct StudyTimerLiveActivity: Widget {
     } dynamicIsland: { context in
       DynamicIsland {
         DynamicIslandExpandedRegion(.leading) {
-          StudyTimerProgressRing(state: context.state)
-        }
-
-        DynamicIslandExpandedRegion(.center) {
           VStack(alignment: .leading, spacing: 4) {
-            StudyTimerTitleText(state: context.state)
+            Text(context.state.displayName)
               .font(.headline)
-            StudyTimerRemainingText(state: context.state)
-              .font(.system(.title3, design: .rounded).monospacedDigit())
+              .lineLimit(1)
+
+            if let countdownInterval = context.state.countdownInterval {
+              Text(timerInterval: countdownInterval, countsDown: true)
+                .font(.system(.title3, design: .rounded).monospacedDigit())
+            } else {
+              StudyTimerRemainingText(state: context.state)
+                .font(.system(.title3, design: .rounded).monospacedDigit())
+            }
           }
         }
 
+        DynamicIslandExpandedRegion(.center) {
+          StudyTimerProgressRing(state: context.state)
+            .frame(width: 28, height: 28)
+        }
+
         DynamicIslandExpandedRegion(.trailing) {
-          Image(systemName: "book.closed.fill")
-            .foregroundStyle(.blue)
+          // Empty for balanced layout
         }
       } compactLeading: {
-        Image(systemName: "book.closed.fill")
-          .foregroundStyle(.blue)
+        Text(context.state.displayName)
+          .font(.caption2)
+          .lineLimit(1)
+          .truncationMode(.tail)
+          .foregroundStyle(.primary)
       } compactTrailing: {
-        StudyTimerRemainingText(state: context.state)
-          .font(.caption2.monospacedDigit())
-          .lineLimit(1)
-          .minimumScaleFactor(0.75)
+        if let countdownInterval = context.state.countdownInterval {
+          Text(timerInterval: countdownInterval, countsDown: true)
+            .font(.caption2.monospacedDigit())
+            .lineLimit(1)
+        } else {
+          StudyTimerRemainingText(state: context.state)
+            .font(.caption2.monospacedDigit())
+            .lineLimit(1)
+        }
       } minimal: {
-        StudyTimerRemainingText(state: context.state)
-          .font(.caption2.monospacedDigit())
-          .lineLimit(1)
-          .minimumScaleFactor(0.75)
+        if let countdownInterval = context.state.countdownInterval {
+          Text(timerInterval: countdownInterval, countsDown: true)
+            .font(.caption2.monospacedDigit())
+            .lineLimit(1)
+        } else {
+          StudyTimerRemainingText(state: context.state)
+            .font(.caption2.monospacedDigit())
+            .lineLimit(1)
+        }
       }
     }
   }
@@ -210,42 +230,38 @@ private struct StudyTimerProgressRing: View {
   }
 }
 
-private extension StudyTimerActivityAttributes.ContentState {
-  var displayName: String {
+extension StudyTimerActivityAttributes.ContentState {
+  fileprivate var displayName: String {
     let trimmedName = sessionName.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmedName.isEmpty ? defaultSessionName : trimmedName
   }
 
-  var isRunning: Bool {
+  fileprivate var isRunning: Bool {
     status == StudyTimerStatus.running.rawValue
   }
 
-  var isCompleted: Bool {
+  fileprivate var isCompleted: Bool {
     status == StudyTimerStatus.completed.rawValue
   }
 
-  var safeDurationMs: Double {
+  fileprivate var safeDurationMs: Double {
     finiteNonNegative(durationMs)
   }
 
-  var safeAccumulatedElapsedMs: Double {
+  fileprivate var safeAccumulatedElapsedMs: Double {
     min(finiteNonNegative(accumulatedElapsedMs), safeDurationMs)
   }
 
-  var endDate: Date? {
+  fileprivate var endDate: Date? {
     guard isRunning, let runningSince else {
       return nil
     }
 
-    // React Native sends elapsed time and the running start time from the same
-    // state transition. Adding the remaining duration to runningSince gives
-    // ActivityKit an absolute end date it can render without per-second JS
-    // updates.
     let remainingAtBaselineMs = max(safeDurationMs - safeAccumulatedElapsedMs, 0)
     return runningSince.addingTimeInterval(remainingAtBaselineMs / 1_000)
   }
 
-  var countdownInterval: ClosedRange<Date>? {
+  fileprivate var countdownInterval: ClosedRange<Date>? {
     guard isRunning, let runningSince, let endDate, safeDurationMs > 0 else {
       return nil
     }
@@ -257,7 +273,7 @@ private extension StudyTimerActivityAttributes.ContentState {
     return runningSince...endDate
   }
 
-  func elapsed(at date: Date) -> Double {
+  fileprivate func elapsed(at date: Date) -> Double {
     let rawElapsedMs: Double
 
     if isRunning, let runningSince {
@@ -273,7 +289,7 @@ private extension StudyTimerActivityAttributes.ContentState {
     return min(max(rawElapsedMs, 0), safeDurationMs)
   }
 
-  func remaining(at date: Date) -> Double {
+  fileprivate func remaining(at date: Date) -> Double {
     let remainingMs = safeDurationMs - elapsed(at: date)
     guard remainingMs.isFinite else {
       return 0
@@ -282,7 +298,7 @@ private extension StudyTimerActivityAttributes.ContentState {
     return max(remainingMs, 0)
   }
 
-  func progress(at date: Date) -> Double {
+  fileprivate func progress(at date: Date) -> Double {
     guard safeDurationMs > 0 else {
       return isCompleted ? 1 : 0
     }
