@@ -30,6 +30,28 @@ public struct StudyTimerActivityAttributes: ActivityAttributes {
       self.runningSince = runningSince
       self.pausedAt = pausedAt
     }
+
+    private enum CodingKeys: String, CodingKey {
+      case sessionName
+      case sessionId
+      case status
+      case durationMs
+      case accumulatedElapsedMs
+      case runningSince
+      case pausedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+      let container = try decoder.container(keyedBy: CodingKeys.self)
+
+      sessionName = try container.decode(String.self, forKey: .sessionName)
+      sessionId = try container.decode(String.self, forKey: .sessionId)
+      status = try container.decode(String.self, forKey: .status)
+      durationMs = try container.decodeIfPresent(Double.self, forKey: .durationMs) ?? 0
+      accumulatedElapsedMs = try container.decode(Double.self, forKey: .accumulatedElapsedMs)
+      runningSince = try container.decodeIfPresent(Date.self, forKey: .runningSince)
+      pausedAt = try container.decodeIfPresent(Date.self, forKey: .pausedAt)
+    }
   }
 
   public var initialSessionName: String

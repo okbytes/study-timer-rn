@@ -14,6 +14,46 @@ struct StudyTimerActivityAttributes: ActivityAttributes {
     public var accumulatedElapsedMs: Double
     public var runningSince: Date?
     public var pausedAt: Date?
+
+    public init(
+      sessionName: String,
+      sessionId: String,
+      status: String,
+      durationMs: Double,
+      accumulatedElapsedMs: Double,
+      runningSince: Date?,
+      pausedAt: Date?
+    ) {
+      self.sessionName = sessionName
+      self.sessionId = sessionId
+      self.status = status
+      self.durationMs = durationMs
+      self.accumulatedElapsedMs = accumulatedElapsedMs
+      self.runningSince = runningSince
+      self.pausedAt = pausedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+      case sessionName
+      case sessionId
+      case status
+      case durationMs
+      case accumulatedElapsedMs
+      case runningSince
+      case pausedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+      let container = try decoder.container(keyedBy: CodingKeys.self)
+
+      sessionName = try container.decode(String.self, forKey: .sessionName)
+      sessionId = try container.decode(String.self, forKey: .sessionId)
+      status = try container.decode(String.self, forKey: .status)
+      durationMs = try container.decodeIfPresent(Double.self, forKey: .durationMs) ?? 0
+      accumulatedElapsedMs = try container.decode(Double.self, forKey: .accumulatedElapsedMs)
+      runningSince = try container.decodeIfPresent(Date.self, forKey: .runningSince)
+      pausedAt = try container.decodeIfPresent(Date.self, forKey: .pausedAt)
+    }
   }
 
   public var initialSessionName: String
@@ -68,28 +108,54 @@ private struct StudyTimerLockScreenView: View {
   let context: ActivityViewContext<StudyTimerActivityAttributes>
 
   var body: some View {
-    VStack(spacing: 10) {
-      HStack(spacing: 12) {
-        Image(systemName: "book.closed.fill")
-          .foregroundStyle(.blue)
-          .fixedSize()
-
-        StudyTimerTitleText(state: context.state)
-          .font(.headline)
-
-        Spacer(minLength: 8)
-
-        StudyTimerRemainingText(state: context.state)
-          .font(.system(.headline, design: .rounded).monospacedDigit())
-          .lineLimit(1)
-          .minimumScaleFactor(0.8)
-          .fixedSize(horizontal: true, vertical: false)
-          .layoutPriority(1)
-      }
-
-      StudyTimerProgressBar(state: context.state)
+    StudyTimerLockScreenHeader(state: context.state) {
+      StudyTimerLockScreenTimeText(state: context.state)
     }
     .padding()
+  }
+}
+
+private struct StudyTimerLockScreenHeader<Trailing: View>: View {
+  let state: StudyTimerActivityAttributes.ContentState
+  let trailing: Trailing
+
+  init(
+    state: StudyTimerActivityAttributes.ContentState,
+    @ViewBuilder trailing: () -> Trailing
+  ) {
+    self.state = state
+    self.trailing = trailing()
+  }
+
+  var body: some View {
+    HStack(spacing: 12) {
+      StudyTimerLockScreenTitle(state: state)
+
+      Spacer(minLength: 8)
+
+      trailing
+        .font(.system(.headline, design: .rounded).monospacedDigit())
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+        .frame(width: 92, alignment: .trailing)
+    }
+  }
+}
+
+private struct StudyTimerLockScreenTitle: View {
+  let state: StudyTimerActivityAttributes.ContentState
+
+  var body: some View {
+    HStack(spacing: 12) {
+      Image(systemName: "book.closed.fill")
+        .foregroundStyle(.blue)
+        .fixedSize()
+
+      Text(state.displayName)
+        .font(.headline)
+        .lineLimit(1)
+        .truncationMode(.tail)
+    }
   }
 }
 
@@ -108,28 +174,18 @@ private struct StudyTimerRemainingText: View {
   let state: StudyTimerActivityAttributes.ContentState
 
   var body: some View {
-    if state.isRunning {
-      TimelineView(.periodic(from: Date(), by: 1)) { timeline in
-        if let endDate = state.endDate, endDate > timeline.date {
-          Text(endDate, style: .timer)
-        } else {
-          Text(formatRemainingTime(state.remaining(at: timeline.date)))
-        }
-      }
-    } else {
-      Text(formatRemainingTime(state.remaining(at: Date())))
-    }
+    Text(formatCompactRemainingTime(state.remaining(at: Date())))
   }
 }
 
-private struct StudyTimerProgressBar: View {
+private struct StudyTimerLockScreenTimeText: View {
   let state: StudyTimerActivityAttributes.ContentState
 
   var body: some View {
-    TimelineView(.periodic(from: Date(), by: 1)) { timeline in
-      ProgressView(value: state.progress(at: timeline.date))
-        .progressViewStyle(.linear)
-        .tint(.blue)
+    if let countdownInterval = state.countdownInterval {
+      Text(timerInterval: countdownInterval, countsDown: true)
+    } else {
+      Text(formatCompactRemainingTime(state.remaining(at: Date())))
     }
   }
 }
@@ -169,7 +225,11 @@ private extension StudyTimerActivityAttributes.ContentState {
   }
 
   var safeDurationMs: Double {
-    max(durationMs, 0)
+    finiteNonNegative(durationMs)
+  }
+
+  var safeAccumulatedElapsedMs: Double {
+    min(finiteNonNegative(accumulatedElapsedMs), safeDurationMs)
   }
 
   var endDate: Date? {
@@ -177,28 +237,49 @@ private extension StudyTimerActivityAttributes.ContentState {
       return nil
     }
 
-    // React Native sends the elapsed checkpoint at the same moment as
-    // runningSince. The remaining duration at that checkpoint is the countdown
-    // baseline, and adding it to runningSince gives ActivityKit an absolute
-    // end date it can render natively without per-second JS updates.
-    let remainingAtBaselineMs = max(safeDurationMs - accumulatedElapsedMs, 0)
+    // React Native sends elapsed time and the running start time from the same
+    // state transition. Adding the remaining duration to runningSince gives
+    // ActivityKit an absolute end date it can render without per-second JS
+    // updates.
+    let remainingAtBaselineMs = max(safeDurationMs - safeAccumulatedElapsedMs, 0)
     return runningSince.addingTimeInterval(remainingAtBaselineMs / 1_000)
+  }
+
+  var countdownInterval: ClosedRange<Date>? {
+    guard isRunning, let runningSince, let endDate, safeDurationMs > 0 else {
+      return nil
+    }
+
+    guard endDate > runningSince, endDate > Date() else {
+      return nil
+    }
+
+    return runningSince...endDate
   }
 
   func elapsed(at date: Date) -> Double {
     let rawElapsedMs: Double
 
     if isRunning, let runningSince {
-      rawElapsedMs = accumulatedElapsedMs + date.timeIntervalSince(runningSince) * 1_000
+      rawElapsedMs = safeAccumulatedElapsedMs + date.timeIntervalSince(runningSince) * 1_000
     } else {
-      rawElapsedMs = accumulatedElapsedMs
+      rawElapsedMs = safeAccumulatedElapsedMs
+    }
+
+    guard rawElapsedMs.isFinite else {
+      return safeAccumulatedElapsedMs
     }
 
     return min(max(rawElapsedMs, 0), safeDurationMs)
   }
 
   func remaining(at date: Date) -> Double {
-    max(safeDurationMs - elapsed(at: date), 0)
+    let remainingMs = safeDurationMs - elapsed(at: date)
+    guard remainingMs.isFinite else {
+      return 0
+    }
+
+    return max(remainingMs, 0)
   }
 
   func progress(at date: Date) -> Double {
@@ -206,7 +287,12 @@ private extension StudyTimerActivityAttributes.ContentState {
       return isCompleted ? 1 : 0
     }
 
-    return min(max(elapsed(at: date) / safeDurationMs, 0), 1)
+    let progress = elapsed(at: date) / safeDurationMs
+    guard progress.isFinite else {
+      return isCompleted ? 1 : 0
+    }
+
+    return min(max(progress, 0), 1)
   }
 }
 
@@ -217,168 +303,24 @@ private enum StudyTimerStatus: String {
   case completed
 }
 
-private func formatRemainingTime(_ totalMilliseconds: Double) -> String {
-  let safeSeconds = max(Int((totalMilliseconds / 1_000).rounded(.up)), 0)
+private func formatCompactRemainingTime(_ totalMilliseconds: Double) -> String {
+  let safeMilliseconds = finiteNonNegative(totalMilliseconds)
+  let safeSeconds = max(Int((safeMilliseconds / 1_000).rounded(.up)), 0)
   let hours = safeSeconds / 3_600
   let minutes = (safeSeconds % 3_600) / 60
   let seconds = safeSeconds % 60
 
-  return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
-}
-
-#if DEBUG
-@available(iOS 16.2, *)
-private enum StudyTimerPreviewFixtures {
-  static let attributes = StudyTimerActivityAttributes(
-    initialSessionName: "Biology",
-    sessionId: "preview-session"
-  )
-
-  static let runningShortSessionName = StudyTimerActivityAttributes.ContentState(
-    sessionName: "Biology",
-    sessionId: "preview-running-short",
-    status: StudyTimerStatus.running.rawValue,
-    durationMs: 25 * 60 * 1_000,
-    accumulatedElapsedMs: 12 * 60 * 1_000,
-    runningSince: Date(timeIntervalSinceNow: -8 * 60),
-    pausedAt: nil
-  )
-
-  static let runningLongSessionName = StudyTimerActivityAttributes.ContentState(
-    sessionName: "Advanced Organic Chemistry Problem Set Review",
-    sessionId: "preview-running-long",
-    status: StudyTimerStatus.running.rawValue,
-    durationMs: 60 * 60 * 1_000,
-    accumulatedElapsedMs: 42 * 60 * 1_000,
-    runningSince: Date(timeIntervalSinceNow: -17 * 60),
-    pausedAt: nil
-  )
-
-  static let pausedSession = StudyTimerActivityAttributes.ContentState(
-    sessionName: "Physics",
-    sessionId: "preview-paused",
-    status: StudyTimerStatus.paused.rawValue,
-    durationMs: 90 * 60 * 1_000,
-    accumulatedElapsedMs: ((1 * 60 * 60) + (23 * 60) + 45) * 1_000,
-    runningSince: nil,
-    pausedAt: Date(timeIntervalSinceNow: -5 * 60)
-  )
-
-  static let completedSession = StudyTimerActivityAttributes.ContentState(
-    sessionName: "Exam Prep",
-    sessionId: "preview-completed",
-    status: StudyTimerStatus.completed.rawValue,
-    durationMs: 30 * 60 * 1_000,
-    accumulatedElapsedMs: 30 * 60 * 1_000,
-    runningSince: nil,
-    pausedAt: Date(timeIntervalSinceNow: -2 * 60)
-  )
-}
-
-@available(iOS 16.2, *)
-private struct StudyTimerLiveActivityPreviews: PreviewProvider {
-  static var previews: some View {
-    Group {
-      StudyTimerPreviewFixtures.attributes
-        .previewContext(
-          StudyTimerPreviewFixtures.runningShortSessionName,
-          viewKind: .content
-        )
-        .previewDisplayName("Content - Running Short")
-
-      StudyTimerPreviewFixtures.attributes
-        .previewContext(
-          StudyTimerPreviewFixtures.runningLongSessionName,
-          viewKind: .content
-        )
-        .previewDisplayName("Content - Running Long")
-
-      StudyTimerPreviewFixtures.attributes
-        .previewContext(
-          StudyTimerPreviewFixtures.pausedSession,
-          viewKind: .content
-        )
-        .previewDisplayName("Content - Paused")
-
-      StudyTimerPreviewFixtures.attributes
-        .previewContext(
-          StudyTimerPreviewFixtures.completedSession,
-          viewKind: .content
-        )
-        .previewDisplayName("Content - Completed")
-
-      StudyTimerPreviewFixtures.attributes
-        .previewContext(
-          StudyTimerPreviewFixtures.runningLongSessionName,
-          viewKind: .dynamicIsland(.compact)
-        )
-        .previewDisplayName("Dynamic Island Compact")
-
-      StudyTimerPreviewFixtures.attributes
-        .previewContext(
-          StudyTimerPreviewFixtures.runningLongSessionName,
-          viewKind: .dynamicIsland(.expanded)
-        )
-        .previewDisplayName("Dynamic Island Expanded")
-
-      StudyTimerPreviewFixtures.attributes
-        .previewContext(
-          StudyTimerPreviewFixtures.completedSession,
-          viewKind: .dynamicIsland(.minimal)
-        )
-        .previewDisplayName("Dynamic Island Minimal")
-    }
+  if hours > 0 {
+    return String(format: "%d:%02d:%02d", hours, minutes, seconds)
   }
+
+  return String(format: "%d:%02d", minutes, seconds)
 }
 
-@available(iOS 17.0, *)
-#Preview("Content - Running Short", as: .content, using: StudyTimerPreviewFixtures.attributes) {
-  StudyTimerLiveActivity()
-} contentStates: {
-  StudyTimerPreviewFixtures.runningShortSessionName
-}
+private func finiteNonNegative(_ value: Double) -> Double {
+  guard value.isFinite else {
+    return 0
+  }
 
-@available(iOS 17.0, *)
-#Preview("Content - Running Long", as: .content, using: StudyTimerPreviewFixtures.attributes) {
-  StudyTimerLiveActivity()
-} contentStates: {
-  StudyTimerPreviewFixtures.runningLongSessionName
+  return max(value, 0)
 }
-
-@available(iOS 17.0, *)
-#Preview("Content - Paused", as: .content, using: StudyTimerPreviewFixtures.attributes) {
-  StudyTimerLiveActivity()
-} contentStates: {
-  StudyTimerPreviewFixtures.pausedSession
-}
-
-@available(iOS 17.0, *)
-#Preview("Content - Completed", as: .content, using: StudyTimerPreviewFixtures.attributes) {
-  StudyTimerLiveActivity()
-} contentStates: {
-  StudyTimerPreviewFixtures.completedSession
-}
-
-@available(iOS 17.0, *)
-#Preview("Dynamic Island Compact", as: .dynamicIsland(.compact), using: StudyTimerPreviewFixtures.attributes) {
-  StudyTimerLiveActivity()
-} contentStates: {
-  StudyTimerPreviewFixtures.runningLongSessionName
-}
-
-@available(iOS 17.0, *)
-#Preview("Dynamic Island Expanded", as: .dynamicIsland(.expanded), using: StudyTimerPreviewFixtures.attributes) {
-  StudyTimerLiveActivity()
-} contentStates: {
-  StudyTimerPreviewFixtures.runningLongSessionName
-  StudyTimerPreviewFixtures.pausedSession
-  StudyTimerPreviewFixtures.completedSession
-}
-
-@available(iOS 17.0, *)
-#Preview("Dynamic Island Minimal", as: .dynamicIsland(.minimal), using: StudyTimerPreviewFixtures.attributes) {
-  StudyTimerLiveActivity()
-} contentStates: {
-  StudyTimerPreviewFixtures.completedSession
-}
-#endif

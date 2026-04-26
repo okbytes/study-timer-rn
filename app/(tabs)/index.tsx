@@ -1,7 +1,12 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { DimensionValue } from "react-native";
 import {
+  Animated,
+  Alert,
+  Easing,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -9,7 +14,6 @@ import {
   TextInput,
   View,
 } from "react-native";
-import type { DimensionValue } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import type { StudyTimerActivityState } from "@/modules/study-timer-module";
@@ -21,11 +25,12 @@ import {
 } from "@/modules/study-timer-module";
 
 const DEFAULT_SESSION_NAME = "Study Timer";
-const DEFAULT_DURATION_MINUTES = "25";
-const MIN_DURATION_MS = 60 * 1000;
+const DEFAULT_DURATION_MS = 25 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;
-
-type TimerStatus = "idle" | "running" | "paused" | "completed";
+const DURATION_STEP_MINUTES = 5;
+const DURATION_STEP_MS = DURATION_STEP_MINUTES * MINUTE_MS;
+const MIN_DURATION_MS = DURATION_STEP_MS;
+const MAX_DURATION_MS = (24 * 60 - DURATION_STEP_MINUTES) * MINUTE_MS;
 
 type TimerSessionBase = {
   sessionName: string;
@@ -58,7 +63,22 @@ type TimerSession =
   | CompletedTimerSession;
 
 function clamp(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+
   return Math.min(Math.max(value, min), max);
+}
+
+function normalizeDurationMs(durationMs: number) {
+  if (!Number.isFinite(durationMs)) {
+    return DEFAULT_DURATION_MS;
+  }
+
+  const roundedDurationMs =
+    Math.round(durationMs / DURATION_STEP_MS) * DURATION_STEP_MS;
+
+  return clamp(roundedDurationMs, MIN_DURATION_MS, MAX_DURATION_MS);
 }
 
 function formatRemainingTime(totalMs: number) {
@@ -72,18 +92,20 @@ function formatRemainingTime(totalMs: number) {
     .join(":");
 }
 
-function formatDurationMinutes(totalMs: number) {
-  return String(Math.max(Math.round(totalMs / MINUTE_MS), 1));
-}
+function formatDurationDisplay(durationMs: number) {
+  const totalMinutes = Math.floor(normalizeDurationMs(durationMs) / MINUTE_MS);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
 
-function parseDurationMs(value: string) {
-  const parsedMinutes = Number.parseFloat(value.replace(",", "."));
-
-  if (!Number.isFinite(parsedMinutes) || parsedMinutes <= 0) {
-    return Number.parseInt(DEFAULT_DURATION_MINUTES, 10) * MINUTE_MS;
+  if (hours === 0) {
+    return `${minutes} min`;
   }
 
-  return Math.max(Math.round(parsedMinutes * MINUTE_MS), MIN_DURATION_MS);
+  if (minutes === 0) {
+    return `${hours} hr`;
+  }
+
+  return `${hours} hr ${minutes} min`;
 }
 
 async function callLiveActivity(action: () => Promise<void>) {
@@ -95,6 +117,23 @@ async function callLiveActivity(action: () => Promise<void>) {
     await action();
   } catch (error) {
     console.warn("Live Activity bridge call failed", error);
+    Alert.alert("Live Activity failed", getErrorMessage(error));
+  }
+}
+
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return "Unknown Live Activity error.";
   }
 }
 
@@ -142,31 +181,17 @@ function normalizeSessionName(name: string) {
   return name.trim() || DEFAULT_SESSION_NAME;
 }
 
-function statusLabel(status: TimerStatus) {
-  switch (status) {
-    case "running":
-      return "Running";
-    case "paused":
-      return "Paused";
-    case "completed":
-      return "Completed";
-    case "idle":
-      return "Ready";
-  }
-}
-
 export default function HomeScreen() {
   const [sessionName, setSessionName] = useState(DEFAULT_SESSION_NAME);
-  const [durationMinutes, setDurationMinutes] = useState(
-    DEFAULT_DURATION_MINUTES,
-  );
+  const [plannedDurationMs, setPlannedDurationMs] =
+    useState(DEFAULT_DURATION_MS);
+  const [showPicker, setShowPicker] = useState(false);
+  const [tempPickerDurationMs, setTempPickerDurationMs] =
+    useState(DEFAULT_DURATION_MS);
   const [session, setSession] = useState<TimerSession | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const pickerAnimation = useRef(new Animated.Value(0)).current;
 
-  const plannedDurationMs = useMemo(
-    () => parseDurationMs(durationMinutes),
-    [durationMinutes],
-  );
   const displayDurationMs = session?.durationMs ?? plannedDurationMs;
   const elapsedMs = useMemo(() => getElapsedMs(session, now), [now, session]);
   const remainingMs = useMemo(() => {
@@ -177,7 +202,14 @@ export default function HomeScreen() {
     return getRemainingMs(session, now);
   }, [now, plannedDurationMs, session]);
   const progress = displayDurationMs > 0 ? elapsedMs / displayDurationMs : 0;
-  const status: TimerStatus = session?.status ?? "idle";
+  const backdropOpacity = pickerAnimation.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 1],
+  });
+  const sheetTranslateY = pickerAnimation.interpolate({
+    inputRange: [0, 1],
+    outputRange: [420, 0],
+  });
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -206,16 +238,76 @@ export default function HomeScreen() {
     void callLiveActivity(() => completeActivity(toActivityState(nextSession)));
   }, [remainingMs, session]);
 
+  useEffect(() => {
+    if (!session || !showPicker) {
+      return;
+    }
+
+    setTempPickerDurationMs(plannedDurationMs);
+    setShowPicker(false);
+  }, [plannedDurationMs, session, showPicker]);
+
+  useEffect(() => {
+    if (!showPicker) {
+      return;
+    }
+
+    pickerAnimation.setValue(0);
+    Animated.timing(pickerAnimation, {
+      duration: 260,
+      easing: Easing.out(Easing.cubic),
+      toValue: 1,
+      useNativeDriver: true,
+    }).start();
+  }, [pickerAnimation, showPicker]);
+
   const completeSession = async (nextSession: CompletedTimerSession) => {
     setNow(nextSession.pausedAtMs);
     setSession(nextSession);
 
-    await callLiveActivity(() => completeActivity(toActivityState(nextSession)));
+    await callLiveActivity(() =>
+      completeActivity(toActivityState(nextSession)),
+    );
+  };
+
+  const openDurationPicker = () => {
+    if (session) {
+      return;
+    }
+
+    setTempPickerDurationMs(plannedDurationMs);
+    setShowPicker(true);
+  };
+
+  const closeDurationPicker = (onClosed?: () => void) => {
+    Animated.timing(pickerAnimation, {
+      duration: 190,
+      easing: Easing.in(Easing.cubic),
+      toValue: 0,
+      useNativeDriver: true,
+    }).start(() => {
+      onClosed?.();
+      setShowPicker(false);
+    });
+  };
+
+  const cancelDurationPicker = () => {
+    closeDurationPicker(() => setTempPickerDurationMs(plannedDurationMs));
+  };
+
+  const commitDurationPicker = () => {
+    if (session) {
+      closeDurationPicker();
+      return;
+    }
+
+    setPlannedDurationMs(normalizeDurationMs(tempPickerDurationMs));
+    closeDurationPicker();
   };
 
   const beginSession = async () => {
     const name = normalizeSessionName(sessionName);
-    const durationMs = parseDurationMs(durationMinutes);
+    const durationMs = normalizeDurationMs(plannedDurationMs);
     const runningSinceMs = Date.now();
     const nextSession: TimerSession = {
       sessionName: name,
@@ -229,7 +321,7 @@ export default function HomeScreen() {
 
     setNow(runningSinceMs);
     setSessionName(name);
-    setDurationMinutes(formatDurationMinutes(durationMs));
+    setPlannedDurationMs(durationMs);
     setSession(nextSession);
 
     await callLiveActivity(() => startActivity(toActivityState(nextSession)));
@@ -368,46 +460,124 @@ export default function HomeScreen() {
             value={sessionName}
           />
 
-          <View style={styles.durationRow}>
-            <TextInput
-              accessibilityLabel="Duration in minutes"
-              editable={!session}
-              inputMode="decimal"
-              keyboardType="decimal-pad"
-              onBlur={() =>
-                setDurationMinutes(formatDurationMinutes(plannedDurationMs))
-              }
-              onChangeText={setDurationMinutes}
-              placeholder={DEFAULT_DURATION_MINUTES}
-              placeholderTextColor="#7C8580"
-              returnKeyType="done"
-              style={[
-                styles.durationInput,
-                session && styles.durationInputDisabled,
-              ]}
-              value={durationMinutes}
-            />
-            <Text style={styles.durationUnit}>min</Text>
-          </View>
+          {session ? (
+            <>
+              <View style={styles.timerTextContainer}>
+                <Text style={styles.remaining}>
+                  {formatRemainingTime(remainingMs)}
+                </Text>
+              </View>
+              <View style={styles.progressTrack}>
+                <View style={[styles.progressFill, { width: progressWidth }]} />
+              </View>
+            </>
+          ) : (
+            <View style={styles.timerTextContainer}>
+              <Pressable
+                accessibilityHint="Opens the duration picker"
+                accessibilityLabel="Study duration"
+                accessibilityRole="button"
+                onPress={openDurationPicker}
+                style={({ pressed }) => [
+                  styles.timerTextPressable,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.remaining}>
+                  {formatRemainingTime(remainingMs)}
+                </Text>
+              </Pressable>
+            </View>
+          )}
 
-          <Text style={styles.remaining}>{formatRemainingTime(remainingMs)}</Text>
+          <Modal
+            animationType="none"
+            transparent
+            visible={showPicker}
+            onRequestClose={cancelDurationPicker}
+          >
+            <View style={styles.modalContainer}>
+              <Animated.View
+                pointerEvents="none"
+                style={[styles.modalScrim, { opacity: backdropOpacity }]}
+              />
+              <Pressable
+                accessibilityLabel="Cancel duration change"
+                accessibilityRole="button"
+                onPress={cancelDurationPicker}
+                style={styles.modalDismissArea}
+              />
+              <Animated.View
+                style={[
+                  styles.pickerSheet,
+                  { transform: [{ translateY: sheetTranslateY }] },
+                ]}
+              >
+                <Text style={styles.pickerTitle}>Set Duration</Text>
 
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: progressWidth }]} />
-          </View>
+                <View style={styles.fineTuneRow}>
+                  <Pressable
+                    accessibilityLabel="Decrease duration by 5 minutes"
+                    accessibilityRole="button"
+                    onPress={() =>
+                      setTempPickerDurationMs((prev) =>
+                        normalizeDurationMs(prev - DURATION_STEP_MS),
+                      )
+                    }
+                    style={({ pressed }) => [
+                      styles.fineTuneButton,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Ionicons name="remove" size={22} color="#14312A" />
+                  </Pressable>
+                  <Text style={styles.selectedDurationText}>
+                    {formatDurationDisplay(tempPickerDurationMs)}
+                  </Text>
+                  <Pressable
+                    accessibilityLabel="Increase duration by 5 minutes"
+                    accessibilityRole="button"
+                    onPress={() =>
+                      setTempPickerDurationMs((prev) =>
+                        normalizeDurationMs(prev + DURATION_STEP_MS),
+                      )
+                    }
+                    style={({ pressed }) => [
+                      styles.fineTuneButton,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Ionicons name="add" size={22} color="#14312A" />
+                  </Pressable>
+                </View>
 
-          <View style={styles.stateRow}>
-            <View
-              style={[
-                styles.statusDot,
-                status === "running" && styles.dotRunning,
-                status === "paused" && styles.dotPaused,
-                status === "completed" && styles.dotCompleted,
-                status === "idle" && styles.dotIdle,
-              ]}
-            />
-            <Text style={styles.statusText}>{statusLabel(status)}</Text>
-          </View>
+                <View style={styles.pickerButtons}>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={cancelDurationPicker}
+                    style={({ pressed }) => [
+                      styles.pickerButton,
+                      styles.pickerCancelButton,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.pickerCancelText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={commitDurationPicker}
+                    style={({ pressed }) => [
+                      styles.pickerButton,
+                      styles.pickerDoneButton,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.pickerDoneText}>Done</Text>
+                  </Pressable>
+                </View>
+              </Animated.View>
+            </View>
+          </Modal>
 
           {session && session.status !== "completed" ? (
             <View style={styles.controls}>
@@ -506,37 +676,6 @@ const styles = StyleSheet.create({
     paddingVertical: 0,
     textAlign: "center",
     width: "100%",
-  },
-  durationRow: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: 8,
-    height: 38,
-    justifyContent: "center",
-    marginTop: 8,
-  },
-  durationInput: {
-    backgroundColor: "#EAE4D9",
-    borderRadius: 8,
-    color: "#1A2922",
-    fontSize: 16,
-    fontVariant: ["tabular-nums"],
-    fontWeight: "800",
-    height: 38,
-    letterSpacing: 0,
-    minWidth: 72,
-    paddingHorizontal: 12,
-    paddingVertical: 0,
-    textAlign: "center",
-  },
-  durationInputDisabled: {
-    color: "#59645F",
-  },
-  durationUnit: {
-    color: "#59645F",
-    fontSize: 14,
-    fontWeight: "800",
-    letterSpacing: 0,
   },
   remaining: {
     color: "#111A16",
@@ -641,6 +780,112 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 16,
     fontWeight: "800",
+    letterSpacing: 0,
+  },
+  timerTextContainer: {
+    alignItems: "center",
+    marginTop: 12,
+  },
+  timerTextPressable: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  tapAffordanceText: {
+    color: "#7C8580",
+    fontSize: 12,
+    fontWeight: "500",
+    letterSpacing: 0,
+    marginTop: 6,
+  },
+  modalContainer: {
+    flex: 1,
+    justifyContent: "flex-end",
+  },
+  modalScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    zIndex: 0,
+  },
+  modalDismissArea: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1,
+  },
+  pickerSheet: {
+    backgroundColor: "#F4F0E8",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingBottom: 40,
+    paddingHorizontal: 16,
+    paddingTop: 20,
+    zIndex: 2,
+  },
+  pickerTitle: {
+    color: "#1A2922",
+    fontSize: 18,
+    fontWeight: "700",
+    letterSpacing: 0,
+    textAlign: "center",
+  },
+  pickerSubtitle: {
+    color: "#59645F",
+    fontSize: 14,
+    fontWeight: "700",
+    letterSpacing: 0,
+    marginTop: 6,
+    textAlign: "center",
+  },
+  fineTuneRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 18,
+    justifyContent: "center",
+    marginTop: 28,
+  },
+  fineTuneButton: {
+    alignItems: "center",
+    backgroundColor: "#EAE4D9",
+    borderRadius: 26,
+    height: 52,
+    justifyContent: "center",
+    width: 52,
+  },
+  selectedDurationText: {
+    color: "#1A2922",
+    fontSize: 28,
+    fontWeight: "800",
+    letterSpacing: 0,
+    minWidth: 148,
+    textAlign: "center",
+  },
+  pickerButtons: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 32,
+    width: "100%",
+  },
+  pickerButton: {
+    alignItems: "center",
+    borderRadius: 8,
+    flex: 1,
+    height: 44,
+    justifyContent: "center",
+  },
+  pickerCancelButton: {
+    backgroundColor: "#EAE4D9",
+  },
+  pickerCancelText: {
+    color: "#59645F",
+    fontSize: 16,
+    fontWeight: "700",
+    letterSpacing: 0,
+  },
+  pickerDoneButton: {
+    backgroundColor: "#315C4E",
+  },
+  pickerDoneText: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "700",
     letterSpacing: 0,
   },
 });

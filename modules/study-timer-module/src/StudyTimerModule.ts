@@ -35,6 +35,16 @@ declare class StudyTimerModule extends NativeModule<StudyTimerModuleEvents> {
 
 const nativeModule = requireOptionalNativeModule<StudyTimerModule>('StudyTimerModule');
 
+function getNativeModule() {
+  if (!nativeModule) {
+    throw new Error(
+      'StudyTimerModule is not linked into this iOS build. Rebuild/reinstall the app with `bun run ios:rebuild`.'
+    );
+  }
+
+  return nativeModule;
+}
+
 function toNativeArgs(state: StudyTimerActivityState) {
   return [
     state.sessionName,
@@ -48,19 +58,19 @@ function toNativeArgs(state: StudyTimerActivityState) {
 }
 
 export function startActivity(state: StudyTimerActivityState): Promise<void> {
-  return nativeModule?.startActivity(...toNativeArgs(state)) ?? Promise.resolve();
+  return getNativeModule().startActivity(...toNativeArgs(state));
 }
 
 export function updateActivity(state: StudyTimerActivityState): Promise<void> {
-  return nativeModule?.updateActivity(...toNativeArgs(state)) ?? Promise.resolve();
+  return getNativeModule().updateActivity(...toNativeArgs(state));
 }
 
 export function completeActivity(state: StudyTimerActivityState): Promise<void> {
-  return nativeModule?.completeActivity(...toNativeArgs(state)) ?? Promise.resolve();
+  return getNativeModule().completeActivity(...toNativeArgs(state));
 }
 
 export function endActivity(): Promise<void> {
-  return nativeModule?.endActivity() ?? Promise.resolve();
+  return getNativeModule().endActivity();
 }
 
 export default nativeModule;

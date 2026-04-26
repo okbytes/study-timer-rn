@@ -115,6 +115,10 @@ private extension Date {
       return nil
     }
 
+    guard value.isFinite else {
+      return nil
+    }
+
     let seconds = value > 10_000_000_000 ? value / 1_000 : value
     return Date(timeIntervalSince1970: seconds)
   }
@@ -133,12 +137,6 @@ private final class LiveActivityUnavailableException: Exception {
   }
 }
 
-private final class LiveActivityAuthorizationException: Exception {
-  override var reason: String {
-    "Live Activities are disabled for this app or device."
-  }
-}
-
 #if canImport(ActivityKit)
 @available(iOS 16.1, *)
 private enum StudyTimerActivityController {
@@ -151,10 +149,6 @@ private enum StudyTimerActivityController {
     runningSince: Date?,
     pausedAt: Date?
   ) async throws {
-    guard ActivityAuthorizationInfo().areActivitiesEnabled else {
-      throw LiveActivityAuthorizationException()
-    }
-
     await endActivity()
 
     let attributes = StudyTimerActivityAttributes(
@@ -170,11 +164,12 @@ private enum StudyTimerActivityController {
       runningSince: runningSince,
       pausedAt: pausedAt
     )
-    _ = try Activity<StudyTimerActivityAttributes>.request(
+    let activity = try Activity<StudyTimerActivityAttributes>.request(
       attributes: attributes,
       contentState: state,
       pushType: nil
     )
+    print("StudyTimer Live Activity requested: \(activity.id)")
   }
 
   static func updateActivity(
@@ -256,23 +251,41 @@ private enum StudyTimerActivityController {
   }
 
   private static func normalizedDurationMs(_ durationMs: Double) -> Double {
-    max(durationMs, 0)
+    guard durationMs.isFinite else {
+      return 0
+    }
+
+    return max(durationMs, 0)
   }
 
   private static func clampedElapsedMs(_ elapsedMs: Double, durationMs: Double) -> Double {
-    min(max(elapsedMs, 0), normalizedDurationMs(durationMs))
+    guard elapsedMs.isFinite else {
+      return 0
+    }
+
+    return min(max(elapsedMs, 0), normalizedDurationMs(durationMs))
   }
 }
 
 @available(iOS 16.1, *)
 private extension StudyTimerActivityAttributes.ContentState {
   func resolvedElapsedMs(at date: Date) -> Double {
+    let safeDurationMs = max(durationMs.isFinite ? durationMs : 0, 0)
+    let safeAccumulatedElapsedMs = min(
+      max(accumulatedElapsedMs.isFinite ? accumulatedElapsedMs : 0, 0),
+      safeDurationMs
+    )
+
     guard status == StudyTimerStatus.running.rawValue, let runningSince else {
-      return min(max(accumulatedElapsedMs, 0), max(durationMs, 0))
+      return safeAccumulatedElapsedMs
     }
 
-    let elapsedMs = accumulatedElapsedMs + date.timeIntervalSince(runningSince) * 1_000
-    return min(max(elapsedMs, 0), max(durationMs, 0))
+    let elapsedMs = safeAccumulatedElapsedMs + date.timeIntervalSince(runningSince) * 1_000
+    guard elapsedMs.isFinite else {
+      return safeAccumulatedElapsedMs
+    }
+
+    return min(max(elapsedMs, 0), safeDurationMs)
   }
 }
 #endif
